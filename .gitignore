@@ -1,0 +1,136 @@
+# =====================================================
+# STM32Cube 官方固件包（几百 MB，绝对不要提交）
+# =====================================================
+stm32F401/stm32cubef4-v1-28-3.zip
+stm32F401/stm32cubef4-v1-28-3/
+STM32Cube_FW_*/
+*.zip
+*.rar
+*.7z
+*.tar.gz
+*.tar
+
+# =====================================================
+# STM32 编译产物
+# =====================================================
+*.o
+*.obj
+*.elf
+*.hex
+*.bin
+*.axf
+*.map
+*.lst
+*.lnp
+*.sct
+*.crf
+*.d
+*.dep
+*.htm
+*.build_log.htm
+*.su
+*.i
+
+# =====================================================
+# IAR EWARM
+# =====================================================
+*.ewd
+*.ewt
+*.ewp.bak
+*.eww.bak
+Debug/
+Release/
+settings/
+BrowseInfo/
+*.pbi
+*.pbd
+*.pbw
+*.pbd.browse
+*.cspy.bat
+*.cspy.ps1
+*.driver.xcl
+*.general.xcl
+*.dbgdt
+*.wsdt
+*.crun
+*.dnx
+"Backup of try.ewd"
+"Backup of try.ewp"
+
+# =====================================================
+# Keil MDK
+# =====================================================
+*.uvguix.*
+*.uvoptx
+*.uvprojx.user
+Objects/
+Listings/
+RTE/
+JLinkLog.txt
+JLinkSettings.ini
+DebugConfig/
+
+# =====================================================
+# STM32CubeIDE
+# =====================================================
+.settings/
+.cproject.user
+.project.user
+*.launch
+
+# =====================================================
+# Qt 上位机
+# =====================================================
+build/
+build-*/
+debug/
+release/
+*.pro.user
+*.pro.user.*
+*.qmlproject.user
+*.qmlproject.user.*
+*.exe
+*.dll
+*.so
+*.so.*
+*.dylib
+*.lib
+*.a
+ui_*.h
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+Makefile
+Makefile.*
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+.qmake.stash
+.qmake.cache
+*.autosave
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.manifest
+*.res
+
+# =====================================================
+# VS Code / IDE
+# =====================================================
+.vscode/
+.idea/
+.claude/
+
+# =====================================================
+# 通用
+# =====================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+*.tmp
+*.bak
+*.orig
+*.swp
+*~
