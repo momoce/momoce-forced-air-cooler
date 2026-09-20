@@ -1,0 +1,243 @@
+*** Begin Patch
+*** Delete File: modbushandshake.h
+*** Add File: modbushandshake.h
++#ifndef MODBUS_HANDSHAKE_H
++#define MODBUS_HANDSHAKE_H
++
++#include <QObject>
++#include <QByteArray>
++#include <QHash>
++#include <QString>
++#include <QStringList>
++
++class QSerialPort;
++class QTimer;
++
++class ModbusHandshake : public QObject
++{
++    Q_OBJECT
++public:
++    explicit ModbusHandshake(QObject *parent = nullptr);
++    ~ModbusHandshake() override;
++    void start();
++    void stop();
++    void reset();
++    bool isHandshakeDone() const { return !m_devicePort.isEmpty(); }
++    QString handshakePortName() const { return m_devicePort; }
++    QString knownDevicePort() const { return m_devicePort; }
++    bool hasKnownDevice() const { return !m_devicePort.isEmpty(); }
++    static QByteArray makeFrame(const QByteArray &payload);
++    static bool isDeviceResponse(const QByteArray &frame);
++
++signals:
++    void deviceFound(const QString &portName);
++    void handshakeSucceeded(const QString &portName);
++    void handshakeFailed();
++    void portListChanged(const QStringList &ports);
++
++private slots:
++    void onScanTimer();
++    void onPortReadyRead();
++
++private:
++    static quint16 crc16Modbus(const QByteArray &data);
++    void scanPortsAndHandshake();
++    void tryNextPort();
++    void finishCurrentPort();
++    void closeAllScanPorts();
++
++    QTimer *m_scanTimer = nullptr;
++    QTimer *m_timeoutTimer = nullptr;
++    QHash<QString, QSerialPort*> m_scanPorts;
++    QStringList m_knownPorts;
++    QStringList m_attemptedPorts;
++    QString m_pendingPort;
++    QString m_devicePort;
++    bool m_scanning = false;
++};
++
++#endif
+*** Delete File: modbushandshake.cpp
+*** Add File: modbushandshake.cpp
++#include "modbushandshake.h"
++#include <QDebug>
++#include <QSerialPort>
++#include <QSerialPortInfo>
++#include <QTimer>
++
++namespace {
++const QByteArray kSearchPayload = QByteArray::fromHex("000100000001");
++constexpr int kPortTimeoutMs = 200;
++}
++
++ModbusHandshake::ModbusHandshake(QObject *parent) : QObject(parent)
++{
++    m_scanTimer = new QTimer(this);
++    m_scanTimer->setInterval(500);
++    connect(m_scanTimer, &QTimer::timeout, this, &ModbusHandshake::onScanTimer);
++    m_timeoutTimer = new QTimer(this);
++    m_timeoutTimer->setSingleShot(true);
++    connect(m_timeoutTimer, &QTimer::timeout, this, &ModbusHandshake::finishCurrentPort);
++}
++
++ModbusHandshake::~ModbusHandshake() { closeAllScanPorts(); }
++
++quint16 ModbusHandshake::crc16Modbus(const QByteArray &data)
++{
++    quint16 crc = 0xFFFF;
++    for (unsigned char byte : data) {
++        crc ^= byte;
++        for (int i = 0; i < 8; ++i)
++            crc = (crc & 1) ? quint16((crc >> 1) ^ 0xA001) : quint16(crc >> 1);
++    }
++    return crc;
++}
++
++QByteArray ModbusHandshake::makeFrame(const QByteArray &payload)
++{
++    const quint16 crc = crc16Modbus(payload);
++    QByteArray frame = payload;
++    frame.append(char(crc & 0xFF));
++    frame.append(char((crc >> 8) & 0xFF));
++    return frame;
++}
++
++bool ModbusHandshake::isDeviceResponse(const QByteArray &frame)
++{
++    // 当前下位机返回 01 01 01 01 01 + CRC；兼容省略最后数据字节的响应。
++    for (int dataLength : {5, 4}) {
++        if (frame.size() != dataLength + 2) continue;
++        const QByteArray data = frame.left(dataLength);
++        if (data.left(4) == QByteArray::fromHex("01010101") && makeFrame(data) == frame)
++            return true;
++    }
++    return false;
++}
++
++void ModbusHandshake::start()
++{
++    if (!m_scanTimer->isActive()) m_scanTimer->start();
++    m_scanning = true;
++    m_attemptedPorts.clear();
++    m_pendingPort.clear();
++    closeAllScanPorts();
++    scanPortsAndHandshake();
++}
++
++void ModbusHandshake::stop()
++{
++    m_scanning = false;
++    m_timeoutTimer->stop();
++    m_pendingPort.clear();
++    closeAllScanPorts();
++}
++
++void ModbusHandshake::reset()
++{
++    stop();
++    m_devicePort.clear();
++    m_knownPorts.clear();
++    start();
++}
++
++void ModbusHandshake::onScanTimer()
++{
++    QStringList current;
++    for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts()) current << info.portName();
++    if (current != m_knownPorts) {
++        const QStringList old = m_knownPorts;
++        m_knownPorts = current;
++        emit portListChanged(current);
++        bool hasNewPort = false;
++        for (const QString &port : current)
++            if (!old.contains(port)) { hasNewPort = true; break; }
++        if (hasNewPort && m_devicePort.isEmpty() && !m_scanning) {
++            m_scanning = true;
++            m_attemptedPorts.clear();
++            scanPortsAndHandshake();
++        }
++    }
++    if (m_scanning && m_pendingPort.isEmpty()) tryNextPort();
++}
++
++void ModbusHandshake::scanPortsAndHandshake()
++{
++    if (m_scanning && m_pendingPort.isEmpty()) tryNextPort();
++}
++
++void ModbusHandshake::tryNextPort()
++{
++    if (!m_scanning || !m_pendingPort.isEmpty() || !m_devicePort.isEmpty()) return;
++    QStringList ports;
++    for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts()) ports << info.portName();
++    m_knownPorts = ports;
++    emit portListChanged(ports);
++    QString next;
++    for (const QString &port : ports)
++        if (!m_attemptedPorts.contains(port)) { next = port; break; }
++    if (next.isEmpty()) {
++        m_scanning = false;
++        emit handshakeFailed();
++        return;
++    }
++
++    m_attemptedPorts << next;
++    auto *port = new QSerialPort(this);
++    port->setPortName(next);
++    port->setBaudRate(QSerialPort::Baud115200);
++    port->setDataBits(QSerialPort::Data8);
++    port->setParity(QSerialPort::NoParity);
++    port->setStopBits(QSerialPort::OneStop);
++    port->setFlowControl(QSerialPort::NoFlowControl);
++    if (!port->open(QIODevice::ReadWrite)) {
++        qDebug() << "[Handshake] 打开失败:" << next << port->errorString();
++        delete port;
++        QTimer::singleShot(0, this, &ModbusHandshake::tryNextPort);
++        return;
++    }
++    connect(port, &QSerialPort::readyRead, this, &ModbusHandshake::onPortReadyRead);
++    m_scanPorts.insert(next, port);
++    m_pendingPort = next;
++    port->write(makeFrame(kSearchPayload));
++    port->flush();
++    qDebug() << "[Handshake] 搜索" << next << makeFrame(kSearchPayload).toHex(' ');
++    m_timeoutTimer->start(kPortTimeoutMs);
++}
++
++void ModbusHandshake::finishCurrentPort()
++{
++    if (m_pendingPort.isEmpty()) return;
++    const QString portName = m_pendingPort;
++    m_pendingPort.clear();
++    if (QSerialPort *port = m_scanPorts.take(portName)) {
++        port->close();
++        port->deleteLater();
++    }
++    tryNextPort();
++}
++
++void ModbusHandshake::onPortReadyRead()
++{
++    auto *port = qobject_cast<QSerialPort*>(sender());
++    if (!port) return;
++    const QByteArray data = port->readAll();
++    if (!isDeviceResponse(data)) return;
++    m_timeoutTimer->stop();
++    m_pendingPort.clear();
++    m_devicePort = port->portName();
++    m_scanning = false;
++    qDebug() << "[Handshake] 设备发现:" << m_devicePort;
++    closeAllScanPorts();
++    emit deviceFound(m_devicePort);
++    emit handshakeSucceeded(m_devicePort);
++}
++
++void ModbusHandshake::closeAllScanPorts()
++{
++    for (QSerialPort *port : std::as_const(m_scanPorts)) {
++        port->close();
++        port->deleteLater();
++    }
++    m_scanPorts.clear();
++}
+*** End Patch
