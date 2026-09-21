@@ -22,7 +22,6 @@
 static const int kTitleBarHeight = 56;
 static const int kCornerRadius   = 14;
 
-// 把字节数组格式化成 "01 02 03 AB CD" 的形式
 static QString hexDump(const QByteArray &data)
 {
     return QString::fromLatin1(data.toHex(' ')).toUpper();
@@ -41,7 +40,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupUI();
 
-    // 屏幕居中
     QScreen *screen = QGuiApplication::primaryScreen();
     if (screen) {
         QRect geo = screen->geometry();
@@ -56,6 +54,7 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    stopHeartbeat();
     closeSerialPort();
 }
 
@@ -130,7 +129,12 @@ void MainWindow::setupUI()
     connect(m_disconnectTimeout, &QTimer::timeout,
             this, &MainWindow::onDisconnectTimeout);
 
-    // 初始记录一下当前串口，避免启动时被当作"新插入"
+    // ---- 9. 心跳定时器（200ms） ----
+    m_heartbeatTimer = new QTimer(this);
+    m_heartbeatTimer->setInterval(200);
+    connect(m_heartbeatTimer, &QTimer::timeout,
+            this, &MainWindow::onHeartbeatTimeout);
+
     m_knownPorts = allAvailablePorts();
 }
 
@@ -248,11 +252,12 @@ void MainWindow::onPowerToggled(bool checked)
     if (checked && m_deviceConnected)
         return;
 
-    // 1. 已连接串口被拔掉 → 复位 + 重新扫描
+    // 1. 已连接串口被拔掉
     if (m_deviceConnected && !isPortAvailable(m_currentPortName)) {
         qDebug() << "[状态] 已连接串口被拔掉：" << m_currentPortName;
 
-        closeSerialPort();
+        stopHeartbeat();
+        closeSerialPort();      // 内部隐藏子窗口
         m_deviceFound = false;
         m_foundPortName.clear();
 
@@ -288,11 +293,14 @@ void MainWindow::onPowerToggled(bool checked)
     // 3. 开关打开：优先连已找到的设备
     if (m_deviceFound && !m_deviceConnected) {
         if (isPortAvailable(m_foundPortName)) {
-            // ⭐ 关键：打开串口 + 发送连接帧 + 启动握手超时
+            stopHeartbeat();
             startConnectHandshake(m_foundPortName);
         } else {
             m_deviceFound = false;
             m_foundPortName.clear();
+
+            if (m_devicePrompt)
+                m_devicePrompt->hide();
 
             if (m_titleBar && m_titleBar->powerButton())
                 m_titleBar->powerButton()->setChecked(false);
@@ -333,6 +341,10 @@ void MainWindow::onSerialDataReceived()
              << " 端口：" << m_currentPortName;
 
     m_rxBuffer.append(data);
+
+    // ⭐ 心跳收到任何响应都算有效
+    if (m_heartbeatTimer && m_heartbeatTimer->isActive())
+        m_heartbeatResponseReceived = true;
 
     // ---------- 正在等连接响应 ----------
     if (m_connectPending) {
@@ -378,6 +390,10 @@ void MainWindow::onSerialDataReceived()
         return;
     }
 
+    // ---------- 心跳期间：不清缓冲 ----------
+    if (m_heartbeatTimer && m_heartbeatTimer->isActive())
+        return;
+
     // ---------- 正常通信 ----------
     if (m_deviceConnected && m_titleBar)
         m_titleBar->flashPowerButton();
@@ -386,7 +402,7 @@ void MainWindow::onSerialDataReceived()
 }
 
 // ============================================================
-// ⭐ 统一握手入口：打开串口 + 发送连接帧
+// 统一握手入口
 // ============================================================
 void MainWindow::startConnectHandshake(const QString &portName)
 {
@@ -395,7 +411,6 @@ void MainWindow::startConnectHandshake(const QString &portName)
 
     qDebug() << "[握手] 开始连接：" << portName;
 
-    // 1. 打开串口（内部不置蓝）
     openSerialPort(portName);
 
     if (!m_serialPort || !m_serialPort->isOpen()) {
@@ -403,7 +418,6 @@ void MainWindow::startConnectHandshake(const QString &portName)
         return;
     }
 
-    // 2. 发送连接帧，启动超时
     m_connectPending = true;
     m_rxBuffer.clear();
     m_connectTimeout->start();
@@ -422,16 +436,17 @@ void MainWindow::startConnectHandshake(const QString &portName)
 }
 
 // ============================================================
-// 卡片点击后：调用统一握手入口
+// 卡片点击后
 // ============================================================
 void MainWindow::onConnectRequested(const QString &portName)
 {
     qDebug() << "[状态] 用户点击卡片连接：" << portName;
+    stopHeartbeat();
     startConnectHandshake(portName);
 }
 
 // ============================================================
-// 打开串口：只打开，不置蓝
+// ⭐ 打开串口
 // ============================================================
 void MainWindow::openSerialPort(const QString &portName)
 {
@@ -462,7 +477,7 @@ void MainWindow::openSerialPort(const QString &portName)
 }
 
 // ============================================================
-// 关闭串口
+// ⭐ 关闭串口：内部统一隐藏子窗口
 // ============================================================
 void MainWindow::closeSerialPort()
 {
@@ -479,8 +494,88 @@ void MainWindow::closeSerialPort()
     if (m_connectTimeout)    m_connectTimeout->stop();
     if (m_disconnectTimeout) m_disconnectTimeout->stop();
 
+    // ⭐ 统一隐藏子窗口
+    if (m_devicePrompt)
+        m_devicePrompt->hide();
+
     if (m_titleBar && m_titleBar->powerButton())
         m_titleBar->powerButton()->setChecked(false);
+}
+
+// ============================================================
+// ⭐ 心跳
+// ============================================================
+void MainWindow::startHeartbeat()
+{
+    if (!m_serialPort || !m_serialPort->isOpen()) {
+        qWarning() << "[心跳] 串口未打开，无法启动心跳";
+        return;
+    }
+
+    m_heartbeatMissCount = 0;
+    m_heartbeatResponseReceived = false;
+    m_heartbeatFirst = true;
+    m_rxBuffer.clear();
+
+    m_heartbeatTimer->start();
+    qDebug() << "[心跳] 启动（200ms 一次）";
+}
+
+void MainWindow::stopHeartbeat()
+{
+    if (m_heartbeatTimer && m_heartbeatTimer->isActive()) {
+        m_heartbeatTimer->stop();
+        qDebug() << "[心跳] 停止";
+    }
+    m_heartbeatMissCount = 0;
+    m_heartbeatResponseReceived = false;
+    m_heartbeatFirst = true;
+}
+
+void MainWindow::onHeartbeatTimeout()
+{
+    if (!m_serialPort || !m_serialPort->isOpen())
+        return;
+
+    if (!m_heartbeatFirst) {
+        if (m_heartbeatResponseReceived) {
+            m_heartbeatMissCount = 0;
+        } else {
+            m_heartbeatMissCount++;
+            qDebug() << "[心跳] 未响应，累计：" << m_heartbeatMissCount;
+
+            if (m_heartbeatMissCount >= 3) {
+                qDebug() << "[心跳] 设备丢失，关闭子窗口";
+                onHeartbeatLost();
+                return;
+            }
+        }
+    }
+    m_heartbeatFirst = false;
+    m_heartbeatResponseReceived = false;
+
+    QByteArray frame;
+    frame.append(char(0x00));
+    frame.append(char(0x01));
+    frame.append(char(0x00));
+    frame.append(char(0x00));
+    frame = ModbusRTU::buildFrame(frame);
+
+    qDebug() << "[TX][心跳]" << hexDump(frame)
+             << " 端口：" << m_currentPortName;
+    m_serialPort->write(frame);
+    m_serialPort->flush();
+}
+
+void MainWindow::onHeartbeatLost()
+{
+    qDebug() << "[心跳] 设备丢失，关闭子窗口";
+
+    stopHeartbeat();
+    closeSerialPort();      // 内部会隐藏子窗口、复位按钮
+
+    m_deviceFound = false;
+    m_foundPortName.clear();
 }
 
 // ============================================================
@@ -559,7 +654,7 @@ void MainWindow::showEvent(QShowEvent *event)
 }
 
 // ============================================================
-// 定时器：只扫新串口 / 检测已连接串口被拔
+// ⭐ 定时器：检测新串口 / 检测设备被拔
 // ============================================================
 void MainWindow::checkForNewPorts()
 {
@@ -568,14 +663,30 @@ void MainWindow::checkForNewPorts()
 
     QStringList currentPorts = allAvailablePorts();
 
+    // 1. 已连接的串口被拔掉
     if (m_deviceConnected && !currentPorts.contains(m_currentPortName)) {
         qDebug() << "[状态] 连接中串口被拔掉：" << m_currentPortName;
 
-        closeSerialPort();
+        stopHeartbeat();
+        closeSerialPort();      // 内部隐藏子窗口、复位按钮
         m_deviceFound = false;
         m_foundPortName.clear();
     }
 
+    // ⭐ 2. 扫描到了设备但还没连接，设备已被拔掉
+    if (m_deviceFound && !m_deviceConnected
+        && !m_foundPortName.isEmpty()
+        && !currentPorts.contains(m_foundPortName)) {
+
+        qDebug() << "[状态] 已找到的设备被拔掉：" << m_foundPortName;
+
+        stopHeartbeat();
+        closeSerialPort();      // 内部隐藏子窗口、复位按钮
+        m_deviceFound = false;
+        m_foundPortName.clear();
+    }
+
+    // 3. 找新插入的串口
     QStringList newPorts;
     for (const QString &p : currentPorts) {
         if (!m_knownPorts.contains(p))
@@ -606,8 +717,32 @@ void MainWindow::onDeviceFound(const QString &portName)
     if (m_scanner)
         m_scanner->stopScan();
 
+    // 显示子窗口
     if (m_devicePrompt)
         m_devicePrompt->setDeviceFound(portName);
+
+    // 延迟一下再打开串口 + 启动心跳
+    // （等扫描子线程真正退出，释放串口）
+    QTimer::singleShot(200, this, [this, portName]{
+        if (!m_deviceFound || m_foundPortName != portName)
+            return;
+
+        if (m_connectPending || m_deviceConnected)
+            return;
+
+        // ⭐ 再次确认串口还存在
+        if (!isPortAvailable(portName)) {
+            qDebug() << "[Scan] 延迟后串口已不存在：" << portName;
+            closeSerialPort();
+            m_deviceFound = false;
+            m_foundPortName.clear();
+            return;
+        }
+
+        openSerialPort(portName);
+        if (m_serialPort && m_serialPort->isOpen())
+            startHeartbeat();
+    });
 }
 
 // ============================================================
@@ -619,8 +754,9 @@ void MainWindow::onScanFinished()
     qDebug() << "[Scan] 扫描结束，found =" << m_deviceFound
              << " connected =" << m_deviceConnected;
 
+    // ⭐ 未找到设备时：只隐藏，不显示空白子窗口
     if (!m_deviceFound && !m_deviceConnected && m_devicePrompt)
-        m_devicePrompt->setDeviceNotFound();
+        m_devicePrompt->hide();
 }
 
 // ============================================================

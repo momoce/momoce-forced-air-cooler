@@ -47,6 +47,8 @@ private slots:
     void onConnectTimeout();
     void onDisconnectTimeout();
 
+    void onHeartbeatTimeout();
+
 private:
     void setupUI();
     void updateLayout();
@@ -54,8 +56,11 @@ private:
     void openSerialPort(const QString &portName);
     void closeSerialPort();
 
-    // ⭐ 打开串口 + 发送连接帧 + 启动握手超时
     void startConnectHandshake(const QString &portName);
+
+    void startHeartbeat();
+    void stopHeartbeat();
+    void onHeartbeatLost();
 
     void        startScan(const QStringList &ports);
     QStringList allAvailablePorts() const;
@@ -76,6 +81,12 @@ private:
     QTimer      *m_connectTimeout    = nullptr;
     QTimer      *m_disconnectTimeout = nullptr;
     QByteArray   m_rxBuffer;
+
+    // 心跳
+    QTimer      *m_heartbeatTimer            = nullptr;
+    int          m_heartbeatMissCount        = 0;
+    bool         m_heartbeatResponseReceived = false;
+    bool         m_heartbeatFirst            = true;
 
     // 界面
     QColor  m_backgroundColor;
