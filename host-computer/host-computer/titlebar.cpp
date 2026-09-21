@@ -9,33 +9,30 @@
 #include <QWindow>
 #include <QIcon>
 #include <QTimer>
-#include <QSerialPortInfo>
+#include <QInputDialog>
+#include <QMessageBox>
+#include <QLineEdit>
 #include <cmath>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-// ⭐ 闪烁参数（想调就改这里）
-static const int kFlashDuration    = 50;   // 深蓝色持续 100ms
-static const int kCooldownDuration = 50;   // 浅蓝色至少持续 100ms
+static const int kFlashDuration    = 50;
+static const int kCooldownDuration = 50;
 
-// ⭐ 按钮颜色
-static const QString kColorOff        = "#cccccc";   // 关闭：灰
+static const QString kColorOff        = "#cccccc";
 static const QString kColorOffHover   = "#bfbfbf";
 static const QString kColorOffBorder  = "#b0b0b0";
 
-static const QString kColorOn         = "#64B5F6";   // 启动：浅蓝
+static const QString kColorOn         = "#64B5F6";
 static const QString kColorOnHover    = "#42A5F5";
 static const QString kColorOnBorder   = "#42A5F5";
 
-static const QString kColorFlash      = "#1976D2";   // 收到数据：深蓝
+static const QString kColorFlash      = "#1976D2";
 static const QString kColorFlashHover = "#1565C0";
 static const QString kColorFlashBorder= "#0D47A1";
 
-// ============================================================
-// 自绘齿轮图标
-// ============================================================
 static QPixmap makeGearPixmap(int size, const QColor &color)
 {
     QPixmap pix(size, size);
@@ -71,14 +68,11 @@ static QPixmap makeGearPixmap(int size, const QColor &color)
     return pix;
 }
 
-// ============================================================
-// 构造函数
-// ============================================================
 TitleBar::TitleBar(QWidget *parent)
     : QWidget(parent)
 {
     setObjectName("customTitleBar");
-    setAttribute(Qt::WA_StyledBackground, true);
+    setAttribute(Qt::WA_StyledBackground, false);
 
     setStyleSheet(
         "#customTitleBar {"
@@ -86,7 +80,6 @@ TitleBar::TitleBar(QWidget *parent)
         "    border: none;"
         "}");
 
-    // ⭐ 初始化闪烁定时器
     m_flashTimer = new QTimer(this);
     m_flashTimer->setSingleShot(true);
     m_flashTimer->setInterval(kFlashDuration);
@@ -100,17 +93,12 @@ TitleBar::TitleBar(QWidget *parent)
     setupUI();
 }
 
-// ============================================================
-// 初始化所有子控件
-// ============================================================
 void TitleBar::setupUI()
 {
-    // ---------------- 1. 标题 ----------------
     m_titleLabel = new QLabel(QStringLiteral("压风式散热器"), this);
     m_titleLabel->setStyleSheet(
         "QLabel { color: #333; font-size: 14px; font-weight: bold; }");
 
-    // ---------------- 2. 圆形开关按钮 ----------------
     m_powerButton = new QPushButton(this);
     m_powerButton->setFixedSize(28, 28);
     m_powerButton->setCheckable(true);
@@ -119,13 +107,10 @@ void TitleBar::setupUI()
     m_powerButton->setToolTip(QStringLiteral("启动 / 停止"));
     m_powerButton->setToolTipDuration(2000);
 
-    // 初始样式由 updatePowerButtonStyle 设置
     updatePowerButtonStyle();
 
-    // ⭐ 状态变化：更新样式 + 复位闪烁状态
     connect(m_powerButton, &QPushButton::toggled, this, [this](bool checked){
         if (!checked) {
-            // 关闭电源：停止所有闪烁
             m_flashing     = false;
             m_pendingFlash = false;
             m_flashTimer->stop();
@@ -134,18 +119,19 @@ void TitleBar::setupUI()
         updatePowerButtonStyle();
     });
 
-    // 对外发信号
     connect(m_powerButton, &QPushButton::toggled,
             this, &TitleBar::powerToggled);
 
-    // ---------------- 3. 串口选择按钮 ----------------
-    m_serialButton = new QPushButton(this);
-    m_serialButton->setFixedHeight(28);
-    m_serialButton->setMinimumWidth(130);
-    m_serialButton->setCursor(Qt::PointingHandCursor);
-    m_serialButton->setText(QStringLiteral("选择串口"));
-    m_serialButton->setToolTip(QStringLiteral("选择串口"));
-    m_serialButton->setStyleSheet(
+    m_presets = QStringList{ QStringLiteral("默认预设"), QStringLiteral("预设 2") };
+    m_currentPreset = m_presets.first();
+
+    m_presetButton = new QPushButton(this);
+    m_presetButton->setFixedHeight(28);
+    m_presetButton->setMinimumWidth(130);
+    m_presetButton->setCursor(Qt::PointingHandCursor);
+    m_presetButton->setText(m_currentPreset);
+    m_presetButton->setToolTip(QStringLiteral("选择预设"));
+    m_presetButton->setStyleSheet(
         "QPushButton {"
         "    background-color: rgba(255, 255, 255, 200);"
         "    border: 1px solid rgba(0, 0, 0, 40);"
@@ -158,8 +144,54 @@ void TitleBar::setupUI()
         "QPushButton:hover   { background-color: rgba(255, 255, 255, 240); }"
         "QPushButton:pressed { background-color: rgba(220, 220, 220, 240); }");
 
-    m_serialMenu = new QMenu(this);
-    m_serialMenu->setStyleSheet(
+    m_addPresetButton = new QPushButton(QStringLiteral("+"), this);
+    m_addPresetButton->setFixedSize(28, 28);
+    m_addPresetButton->setCursor(Qt::PointingHandCursor);
+    m_addPresetButton->setToolTip(QStringLiteral("新建预设"));
+    m_addPresetButton->setStyleSheet(
+        "QPushButton {"
+        "    background-color: rgba(255, 255, 255, 200);"
+        "    border: 1px solid rgba(0, 0, 0, 40);"
+        "    border-radius: 6px;"
+        "    font-size: 16px; font-weight: bold;"
+        "    color: #333; padding: 0;"
+        "}"
+        "QPushButton:hover   { background-color: rgba(255, 255, 255, 240); }"
+        "QPushButton:pressed { background-color: rgba(220, 220, 220, 240); }");
+
+    m_removePresetButton = new QPushButton(QStringLiteral("-"), this);
+    m_removePresetButton->setFixedSize(28, 28);
+    m_removePresetButton->setCursor(Qt::PointingHandCursor);
+    m_removePresetButton->setToolTip(QStringLiteral("删除预设"));
+    m_removePresetButton->setStyleSheet(
+        "QPushButton {"
+        "    background-color: rgba(255, 255, 255, 200);"
+        "    border: 1px solid rgba(0, 0, 0, 40);"
+        "    border-radius: 6px;"
+        "    font-size: 16px; font-weight: bold;"
+        "    color: #333; padding: 0;"
+        "}"
+        "QPushButton:hover   { background-color: rgba(255, 255, 255, 240); }"
+        "QPushButton:pressed { background-color: rgba(220, 220, 220, 240); }");
+
+    m_renameButton = new QPushButton(QStringLiteral("重命名"), this);
+    m_renameButton->setFixedHeight(28);
+    m_renameButton->setMinimumWidth(64);
+    m_renameButton->setCursor(Qt::PointingHandCursor);
+    m_renameButton->setToolTip(QStringLiteral("重命名当前预设"));
+    m_renameButton->setStyleSheet(
+        "QPushButton {"
+        "    background-color: rgba(255, 255, 255, 200);"
+        "    border: 1px solid rgba(0, 0, 0, 40);"
+        "    border-radius: 6px;"
+        "    padding: 0 10px;"
+        "    font-size: 12px; color: #333;"
+        "}"
+        "QPushButton:hover   { background-color: rgba(255, 255, 255, 240); }"
+        "QPushButton:pressed { background-color: rgba(220, 220, 220, 240); }");
+
+    m_presetMenu = new QMenu(this);
+    m_presetMenu->setStyleSheet(
         "QMenu {"
         "    background-color: rgba(255, 255, 255, 245);"
         "    border: 1px solid rgba(0,0,0,30);"
@@ -182,10 +214,11 @@ void TitleBar::setupUI()
         "    margin: 4px 8px;"
         "}");
 
-    connect(m_serialButton, &QPushButton::clicked,
-            this, &TitleBar::onSerialButtonClicked);
+    connect(m_presetButton,       &QPushButton::clicked, this, &TitleBar::onPresetButtonClicked);
+    connect(m_addPresetButton,    &QPushButton::clicked, this, &TitleBar::onAddPresetClicked);
+    connect(m_removePresetButton, &QPushButton::clicked, this, &TitleBar::onRemovePresetClicked);
+    connect(m_renameButton,       &QPushButton::clicked, this, &TitleBar::onRenamePresetClicked);
 
-    // ---------------- 4. 齿轮按钮 ----------------
     m_gearButton = new QPushButton(this);
     m_gearButton->setFixedSize(36, 36);
     m_gearButton->setCursor(Qt::PointingHandCursor);
@@ -204,7 +237,6 @@ void TitleBar::setupUI()
     connect(m_gearButton, &QPushButton::clicked,
             this, &TitleBar::gearClicked);
 
-    // ---------------- 5. 最小化 ----------------
     m_minButton = new QPushButton(QStringLiteral("—"), this);
     m_minButton->setFixedSize(36, 36);
     m_minButton->setCursor(Qt::PointingHandCursor);
@@ -218,7 +250,6 @@ void TitleBar::setupUI()
     connect(m_minButton, &QPushButton::clicked,
             this, &TitleBar::minimizeClicked);
 
-    // ---------------- 6. 最大化 ----------------
     m_maxButton = new QPushButton(QStringLiteral("□"), this);
     m_maxButton->setFixedSize(36, 36);
     m_maxButton->setCursor(Qt::PointingHandCursor);
@@ -232,7 +263,6 @@ void TitleBar::setupUI()
     connect(m_maxButton, &QPushButton::clicked,
             this, &TitleBar::maximizeClicked);
 
-    // ---------------- 7. 关闭 ----------------
     m_closeButton = new QPushButton(QStringLiteral("×"), this);
     m_closeButton->setFixedSize(36, 36);
     m_closeButton->setCursor(Qt::PointingHandCursor);
@@ -246,14 +276,16 @@ void TitleBar::setupUI()
     connect(m_closeButton, &QPushButton::clicked,
             this, &TitleBar::closeClicked);
 
-    // ---------------- 布局 ----------------
     QHBoxLayout *layout = new QHBoxLayout(this);
     layout->setContentsMargins(20, 0, 8, 0);
     layout->setSpacing(8);
 
     layout->addWidget(m_titleLabel);
     layout->addWidget(m_powerButton);
-    layout->addWidget(m_serialButton);
+    layout->addWidget(m_presetButton);
+    layout->addWidget(m_addPresetButton);
+    layout->addWidget(m_removePresetButton);
+    layout->addWidget(m_renameButton);
     layout->addStretch();
     layout->addWidget(m_gearButton);
     layout->addWidget(m_minButton);
@@ -261,26 +293,157 @@ void TitleBar::setupUI()
     layout->addWidget(m_closeButton);
 }
 
-// ============================================================
-// ⭐ 更新电源按钮样式
-// ============================================================
+void TitleBar::refreshPresetMenu()
+{
+    m_presetMenu->clear();
+
+    if (m_presets.isEmpty()) {
+        QAction *emptyAct = m_presetMenu->addAction(QStringLiteral("暂无预设"));
+        emptyAct->setEnabled(false);
+        return;
+    }
+
+    for (const QString &name : m_presets) {
+        QAction *act = m_presetMenu->addAction(name);
+        act->setCheckable(true);
+        act->setChecked(name == m_currentPreset);
+        act->setData(name);
+
+        connect(act, &QAction::triggered, this, [this, name]{
+            m_currentPreset = name;
+            m_presetButton->setText(name);
+            emit presetChanged(name);
+        });
+    }
+}
+
+void TitleBar::onPresetButtonClicked()
+{
+    refreshPresetMenu();
+
+    QPoint bottomLeft = m_presetButton->mapToGlobal(
+        QPoint(0, m_presetButton->height() + 4));
+    m_presetMenu->popup(bottomLeft);
+}
+
+void TitleBar::onAddPresetClicked()
+{
+    bool ok = false;
+    QString name = QInputDialog::getText(
+        this,
+        QStringLiteral("新建预设"),
+        QStringLiteral("请输入预设名称："),
+        QLineEdit::Normal,
+        QStringLiteral("新预设"),
+        &ok);
+
+    if (!ok || name.trimmed().isEmpty())
+        return;
+
+    name = name.trimmed();
+
+    if (m_presets.contains(name)) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("已存在同名预设。"));
+        return;
+    }
+
+    m_presets.append(name);
+    m_currentPreset = name;
+    m_presetButton->setText(name);
+
+    emit presetAdded(name);
+    emit presetChanged(name);
+}
+
+void TitleBar::onRemovePresetClicked()
+{
+    if (m_presets.isEmpty())
+        return;
+
+    if (m_currentPreset.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("请先选择一个预设。"));
+        return;
+    }
+
+    QMessageBox::StandardButton ret = QMessageBox::question(
+        this,
+        QStringLiteral("删除预设"),
+        QStringLiteral("确定删除预设 \"%1\" 吗？").arg(m_currentPreset),
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (ret != QMessageBox::Yes)
+        return;
+
+    QString removed = m_currentPreset;
+    m_presets.removeAll(removed);
+
+    m_currentPreset = m_presets.isEmpty() ? QString() : m_presets.first();
+    m_presetButton->setText(m_currentPreset.isEmpty()
+                                ? QStringLiteral("选择预设")
+                                : m_currentPreset);
+
+    emit presetRemoved(removed);
+    emit presetChanged(m_currentPreset);
+}
+
+void TitleBar::onRenamePresetClicked()
+{
+    if (m_currentPreset.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("提示"),
+                                 QStringLiteral("请先选择一个预设。"));
+        return;
+    }
+
+    bool ok = false;
+    QString newName = QInputDialog::getText(
+        this,
+        QStringLiteral("重命名预设"),
+        QStringLiteral("请输入新的名称："),
+        QLineEdit::Normal,
+        m_currentPreset,
+        &ok);
+
+    if (!ok)
+        return;
+
+    newName = newName.trimmed();
+    if (newName.isEmpty() || newName == m_currentPreset)
+        return;
+
+    if (m_presets.contains(newName)) {
+        QMessageBox::warning(this, QStringLiteral("提示"),
+                             QStringLiteral("已存在同名预设。"));
+        return;
+    }
+
+    QString oldName = m_currentPreset;
+    int idx = m_presets.indexOf(oldName);
+    if (idx >= 0)
+        m_presets[idx] = newName;
+
+    m_currentPreset = newName;
+    m_presetButton->setText(newName);
+
+    emit presetRenamed(oldName, newName);
+    emit presetChanged(newName);
+}
+
 void TitleBar::updatePowerButtonStyle()
 {
     bool on = m_powerButton->isChecked();
 
     QString bg, hoverBg, border;
     if (!on) {
-        // 关闭状态：灰
         bg      = kColorOff;
         hoverBg = kColorOffHover;
         border  = kColorOffBorder;
     } else if (m_flashing) {
-        // 启动 + 正在闪：深蓝
         bg      = kColorFlash;
         hoverBg = kColorFlashHover;
         border  = kColorFlashBorder;
     } else {
-        // 启动 + 正常：浅蓝
         bg      = kColorOn;
         hoverBg = kColorOnHover;
         border  = kColorOnBorder;
@@ -296,28 +459,19 @@ void TitleBar::updatePowerButtonStyle()
                                      ).arg(bg, border, hoverBg));
 }
 
-// ============================================================
-// ⭐ 收到串口数据时调用：触发闪烁
-// ============================================================
 void TitleBar::flashPowerButton()
 {
-    if (!m_powerButton->isChecked()) return;   // 没启动不闪
-
-    if (m_flashing) return;                    // 已经在深蓝色状态
+    if (!m_powerButton->isChecked()) return;
+    if (m_flashing) return;
 
     if (m_cooldownTimer->isActive()) {
-        // 浅蓝色阶段还没结束，记住有闪烁请求
         m_pendingFlash = true;
         return;
     }
 
-    // 立即开始闪烁
     startFlash();
 }
 
-// ============================================================
-// ⭐ 开始一次深蓝色闪烁
-// ============================================================
 void TitleBar::startFlash()
 {
     m_flashing = true;
@@ -325,9 +479,6 @@ void TitleBar::startFlash()
     m_flashTimer->start(kFlashDuration);
 }
 
-// ============================================================
-// ⭐ 深蓝色时间到 → 变回浅蓝色，进入冷却
-// ============================================================
 void TitleBar::onFlashTimeout()
 {
     m_flashing = false;
@@ -335,9 +486,6 @@ void TitleBar::onFlashTimeout()
     m_cooldownTimer->start(kCooldownDuration);
 }
 
-// ============================================================
-// ⭐ 冷却结束：如果有待处理的闪烁，立刻再闪一次
-// ============================================================
 void TitleBar::onCooldownTimeout()
 {
     if (m_pendingFlash) {
@@ -346,90 +494,23 @@ void TitleBar::onCooldownTimeout()
     }
 }
 
-// ============================================================
-// 设置标题
-// ============================================================
 void TitleBar::setTitle(const QString &title)
 {
     m_titleLabel->setText(title);
 }
 
-// ============================================================
-// 开关状态
-// ============================================================
 bool TitleBar::isPowerOn() const
 {
     return m_powerButton && m_powerButton->isChecked();
 }
 
-// ============================================================
-// 点击串口按钮
-// ============================================================
-void TitleBar::onSerialButtonClicked()
-{
-    refreshSerialPorts();
-
-    QPoint bottomLeft = m_serialButton->mapToGlobal(
-        QPoint(0, m_serialButton->height() + 4));
-    m_serialMenu->popup(bottomLeft);
-}
-
-// ============================================================
-// 扫描串口
-// ============================================================
-void TitleBar::refreshSerialPorts()
-{
-    m_serialMenu->clear();
-
-    const QList<QSerialPortInfo> ports = QSerialPortInfo::availablePorts();
-
-    if (ports.isEmpty()) {
-        QAction *emptyAct = m_serialMenu->addAction(QStringLiteral("无可用串口"));
-        emptyAct->setEnabled(false);
-
-        m_serialMenu->addSeparator();
-
-        QAction *refreshAct = m_serialMenu->addAction(QStringLiteral("刷新"));
-        connect(refreshAct, &QAction::triggered, this, [this]{
-            onSerialButtonClicked();
-        });
-        return;
-    }
-
-    for (const QSerialPortInfo &info : ports) {
-        QString label = info.portName();
-        if (!info.description().isEmpty()) {
-            label += "  ·  " + info.description();
-        }
-
-        QAction *act = m_serialMenu->addAction(label);
-        act->setData(info.portName());
-        act->setCheckable(true);
-        act->setChecked(info.portName() == m_currentPort);
-
-        connect(act, &QAction::triggered, this, [this, act]{
-            m_currentPort = act->data().toString();
-            m_serialButton->setText(m_currentPort);
-            emit serialPortChanged(m_currentPort);
-        });
-    }
-
-    m_serialMenu->addSeparator();
-
-    QAction *refreshAct = m_serialMenu->addAction(QStringLiteral("刷新"));
-    connect(refreshAct, &QAction::triggered, this, [this]{
-        onSerialButtonClicked();
-    });
-}
-
-// ============================================================
-// 判断点击是否落在按钮上
-// ============================================================
 bool TitleBar::isOnAnyButton(const QPoint &pos) const
 {
-    QWidget *widgets[] = { m_titleLabel, m_powerButton, m_serialButton,
-                          m_gearButton, m_minButton,   m_maxButton,
-                          m_closeButton };
+    QWidget *widgets[] = {
+        m_titleLabel, m_powerButton,
+        m_presetButton, m_addPresetButton, m_removePresetButton, m_renameButton,
+        m_gearButton, m_minButton, m_maxButton, m_closeButton
+    };
     for (QWidget *w : widgets) {
         if (w && w->isVisible() && w->geometry().contains(pos))
             return true;
@@ -437,9 +518,6 @@ bool TitleBar::isOnAnyButton(const QPoint &pos) const
     return false;
 }
 
-// ============================================================
-// 鼠标按下：拖窗口
-// ============================================================
 void TitleBar::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton && !isOnAnyButton(event->pos())) {

@@ -33,6 +33,17 @@ set(PROJECT_SOURCES
 
         cropdialog.cpp
         cropdialog.h
+
+        # ⭐ Modbus RTU
+        modbus_rtu.h
+        modbus_rtu.cpp
+
+        # ⭐ 设备提示卡片
+        devicepromptwidget.h
+        devicepromptwidget.cpp
+
+        # ⭐ 资源文件（图片）
+        resources.qrc
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
@@ -61,6 +72,7 @@ target_link_libraries(host-computer PRIVATE
 if(${QT_VERSION} VERSION_LESS 6.1.0)
   set(BUNDLE_ID_OPTION MACOSX_BUNDLE_GUI_IDENTIFIER com.example.host-computer)
 endif()
+
 set_target_properties(host-computer PROPERTIES
     ${BUNDLE_ID_OPTION}
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}

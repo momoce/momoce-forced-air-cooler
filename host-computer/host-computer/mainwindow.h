@@ -5,10 +5,20 @@
 #include <QPixmap>
 #include <QColor>
 #include <QString>
+#include <QStringList>
+#include <QByteArray>
+
+#include "modbus_rtu.h"
 
 class TitleBar;
 class SettingsPanel;
 class QSerialPort;
+class QMessageBox;
+class QTimer;
+class QShowEvent;
+class QResizeEvent;
+class QPaintEvent;
+class DevicePromptWidget;
 
 class MainWindow : public QWidget
 {
@@ -21,28 +31,64 @@ public:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 private slots:
     void onGearClicked();
     void onOpenBackgroundDialog();
     void onPowerToggled(bool checked);
-    void onSerialPortChanged(const QString &portName);
-    void onSerialDataReceived();                       // ⭐ 收到串口数据
+    void onSerialDataReceived();
+
+    void onDeviceFound(const QString &portName);
+    void onScanFinished();
+    void checkForNewPorts();
+
+    void onConnectRequested(const QString &portName);
+    void onConnectTimeout();
+    void onDisconnectTimeout();
 
 private:
     void setupUI();
     void updateLayout();
 
-    void openSerialPort(const QString &portName);       // ⭐ 打开串口
-    void closeSerialPort();                             // ⭐ 关闭串口
+    void openSerialPort(const QString &portName);
+    void closeSerialPort();
 
+    // ⭐ 打开串口 + 发送连接帧 + 启动握手超时
+    void startConnectHandshake(const QString &portName);
+
+    void        startScan(const QStringList &ports);
+    QStringList allAvailablePorts() const;
+    bool        isPortAvailable(const QString &portName) const;
+
+    // 自动扫描设备相关状态
+    bool         m_scanInProgress    = false;
+    bool         m_deviceFound       = false;
+    bool         m_deviceConnected   = false;
+    QString      m_foundPortName;
+    QString      m_currentPortName;
+    QStringList  m_knownPorts;
+    QTimer      *m_portCheckTimer    = nullptr;
+
+    // 连接 / 断开握手
+    bool         m_connectPending    = false;
+    bool         m_disconnectPending = false;
+    QTimer      *m_connectTimeout    = nullptr;
+    QTimer      *m_disconnectTimeout = nullptr;
+    QByteArray   m_rxBuffer;
+
+    // 界面
     QColor  m_backgroundColor;
     QPixmap m_backgroundImage;
-    int     m_opacity;
+    int     m_opacity = 255;
 
-    TitleBar      *m_titleBar     = nullptr;
-    SettingsPanel *m_settingsMenu = nullptr;
-    QSerialPort   *m_serialPort   = nullptr;            // ⭐ 串口对象
+    TitleBar           *m_titleBar     = nullptr;
+    SettingsPanel      *m_settingsMenu = nullptr;
+    QSerialPort        *m_serialPort   = nullptr;
+    ModbusScanner      *m_scanner      = nullptr;
+    DevicePromptWidget *m_devicePrompt = nullptr;
+
+    QString m_currentPreset;
 };
 
 #endif // MAINWINDOW_H

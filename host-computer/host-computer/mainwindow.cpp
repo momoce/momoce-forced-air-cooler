@@ -2,17 +2,31 @@
 #include "titlebar.h"
 #include "settingspanel.h"
 #include "backgrounddialog.h"
+#include "modbus_rtu.h"
+#include "devicepromptwidget.h"
 
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QShowEvent>
+#include <QResizeEvent>
 #include <QPushButton>
 #include <QSerialPort>
+#include <QSerialPortInfo>
+#include <QStringList>
+#include <QTimer>
 #include <QDebug>
+#include <QMessageBox>
 
 static const int kTitleBarHeight = 56;
 static const int kCornerRadius   = 14;
+
+// 把字节数组格式化成 "01 02 03 AB CD" 的形式
+static QString hexDump(const QByteArray &data)
+{
+    return QString::fromLatin1(data.toHex(' ')).toUpper();
+}
 
 // ============================================================
 // 构造函数
@@ -27,6 +41,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupUI();
 
+    // 屏幕居中
     QScreen *screen = QGuiApplication::primaryScreen();
     if (screen) {
         QRect geo = screen->geometry();
@@ -39,14 +54,17 @@ MainWindow::MainWindow(QWidget *parent)
     updateLayout();
 }
 
-MainWindow::~MainWindow() {}
+MainWindow::~MainWindow()
+{
+    closeSerialPort();
+}
 
 // ============================================================
 // 初始化
 // ============================================================
 void MainWindow::setupUI()
 {
-    // ---- 1. 状态栏 ----
+    // ---- 1. 标题栏 ----
     m_titleBar = new TitleBar(this);
     m_titleBar->setTitle(QStringLiteral("压风式散热器v0.0.1"));
 
@@ -62,22 +80,62 @@ void MainWindow::setupUI()
             this, &MainWindow::close);
     connect(m_titleBar, &TitleBar::powerToggled,
             this, &MainWindow::onPowerToggled);
-    connect(m_titleBar, &TitleBar::serialPortChanged,
-            this, &MainWindow::onSerialPortChanged);
 
     // ---- 2. 设置菜单 ----
     m_settingsMenu = new SettingsPanel(this);
     connect(m_settingsMenu, &SettingsPanel::backgroundSettingsRequested,
             this, &MainWindow::onOpenBackgroundDialog);
 
-    // ---- 3. 串口对象 ⭐ ----
+    // ---- 3. 串口对象 ----
     m_serialPort = new QSerialPort(this);
     connect(m_serialPort, &QSerialPort::readyRead,
             this, &MainWindow::onSerialDataReceived);
+
+    // ---- 4. Modbus 扫描器 ----
+    m_scanner = new ModbusScanner(this);
+    connect(m_scanner, &ModbusScanner::deviceFound,
+            this, &MainWindow::onDeviceFound);
+    connect(m_scanner, &ModbusScanner::scanFinished,
+            this, &MainWindow::onScanFinished);
+    connect(m_scanner, &ModbusScanner::portTrying,
+            this, [](const QString &p){ qDebug() << "[Scan] 尝试端口：" << p; });
+    connect(m_scanner, &ModbusScanner::portTimeout,
+            this, [](const QString &p){ qDebug() << "[Scan] 无响应端口：" << p; });
+
+    // ---- 5. 设备提示卡片 ----
+    m_devicePrompt = new DevicePromptWidget(this);
+    m_devicePrompt->hide();
+
+    connect(m_devicePrompt, &DevicePromptWidget::connectRequested,
+            this, &MainWindow::onConnectRequested);
+
+    // ---- 6. 串口轮询定时器 ----
+    m_portCheckTimer = new QTimer(this);
+    m_portCheckTimer->setInterval(1000);
+    connect(m_portCheckTimer, &QTimer::timeout,
+            this, &MainWindow::checkForNewPorts);
+    m_portCheckTimer->start();
+
+    // ---- 7. 连接握手超时 ----
+    m_connectTimeout = new QTimer(this);
+    m_connectTimeout->setSingleShot(true);
+    m_connectTimeout->setInterval(800);
+    connect(m_connectTimeout, &QTimer::timeout,
+            this, &MainWindow::onConnectTimeout);
+
+    // ---- 8. 断开握手超时 ----
+    m_disconnectTimeout = new QTimer(this);
+    m_disconnectTimeout->setSingleShot(true);
+    m_disconnectTimeout->setInterval(800);
+    connect(m_disconnectTimeout, &QTimer::timeout,
+            this, &MainWindow::onDisconnectTimeout);
+
+    // 初始记录一下当前串口，避免启动时被当作"新插入"
+    m_knownPorts = allAvailablePorts();
 }
 
 // ============================================================
-// 状态栏位置
+// 布局
 // ============================================================
 void MainWindow::updateLayout()
 {
@@ -91,6 +149,12 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     QWidget::resizeEvent(event);
     updateLayout();
     update();
+
+    if (m_devicePrompt) {
+        m_devicePrompt->setGeometry(
+            0, kTitleBarHeight,
+            width(), height() - kTitleBarHeight);
+    }
 }
 
 // ============================================================
@@ -181,60 +245,200 @@ void MainWindow::onOpenBackgroundDialog()
 // ============================================================
 void MainWindow::onPowerToggled(bool checked)
 {
-    if (checked) {
-        qDebug() << "散热器已启动";
+    if (checked && m_deviceConnected)
+        return;
 
-        QString port = m_titleBar->currentSerialPort();
-        if (port.isEmpty()) {
-            qDebug() << "⚠ 请先选择串口";
-        } else {
-            openSerialPort(port);
+    // 1. 已连接串口被拔掉 → 复位 + 重新扫描
+    if (m_deviceConnected && !isPortAvailable(m_currentPortName)) {
+        qDebug() << "[状态] 已连接串口被拔掉：" << m_currentPortName;
+
+        closeSerialPort();
+        m_deviceFound = false;
+        m_foundPortName.clear();
+
+        QStringList all = allAvailablePorts();
+        m_knownPorts = all;
+        if (!all.isEmpty())
+            startScan(all);
+        return;
+    }
+
+    // 2. 开关关闭：已连接 → 发送断开帧
+    if (!checked) {
+        if (m_deviceConnected && m_serialPort && m_serialPort->isOpen()) {
+            m_disconnectPending = true;
+            m_rxBuffer.clear();
+            m_disconnectTimeout->start();
+
+            QByteArray frame;
+            frame.append(char(0x00));
+            frame.append(char(0x01));
+            frame.append(char(0x01));
+            frame.append(char(0x01));
+            frame = ModbusRTU::buildFrame(frame);
+
+            qDebug() << "[TX][断开]" << hexDump(frame)
+                     << " 端口：" << m_currentPortName;
+            m_serialPort->write(frame);
+            m_serialPort->flush();
         }
-    } else {
-        qDebug() << "散热器已停止";
-        closeSerialPort();
+        return;
     }
+
+    // 3. 开关打开：优先连已找到的设备
+    if (m_deviceFound && !m_deviceConnected) {
+        if (isPortAvailable(m_foundPortName)) {
+            // ⭐ 关键：打开串口 + 发送连接帧 + 启动握手超时
+            startConnectHandshake(m_foundPortName);
+        } else {
+            m_deviceFound = false;
+            m_foundPortName.clear();
+
+            if (m_titleBar && m_titleBar->powerButton())
+                m_titleBar->powerButton()->setChecked(false);
+
+            QStringList all = allAvailablePorts();
+            m_knownPorts = all;
+            if (!all.isEmpty())
+                startScan(all);
+        }
+        return;
+    }
+
+    // 4. 没找到过设备：扫描全部
+    if (m_devicePrompt)
+        m_devicePrompt->hide();
+
+    if (m_titleBar && m_titleBar->powerButton())
+        m_titleBar->powerButton()->setChecked(false);
+
+    QStringList all = allAvailablePorts();
+    m_knownPorts = all;
+    qDebug() << "[Scan] 按下开关，扫描所有串口：" << all;
+    if (!all.isEmpty())
+        startScan(all);
 }
 
 // ============================================================
-// 串口切换
-// ============================================================
-void MainWindow::onSerialPortChanged(const QString &portName)
-{
-    qDebug() << "切换到串口:" << portName;
-
-    // 如果已经启动，先关闭旧串口再打开新串口
-    if (m_titleBar->isPowerOn()) {
-        closeSerialPort();
-        openSerialPort(portName);
-    }
-}
-
-// ============================================================
-// ⭐ 收到串口数据：触发按钮闪烁
+// 收到串口数据
 // ============================================================
 void MainWindow::onSerialDataReceived()
 {
     if (!m_serialPort) return;
 
-    // 读取全部数据（实际项目里可以解析协议）
     QByteArray data = m_serialPort->readAll();
     if (data.isEmpty()) return;
 
-    // qDebug() << "收到数据:" << data.toHex(' ');
+    qDebug() << "[RX]" << hexDump(data)
+             << " 端口：" << m_currentPortName;
 
-    // ⭐ 让标题栏的电源按钮闪一下
-    m_titleBar->flashPowerButton();
+    m_rxBuffer.append(data);
+
+    // ---------- 正在等连接响应 ----------
+    if (m_connectPending) {
+        const QByteArray expect = QByteArray::fromHex("01010001");
+
+        if (m_rxBuffer.contains(expect)) {
+            qDebug() << "[握手] 收到连接响应，成功";
+
+            m_connectPending = false;
+            m_connectTimeout->stop();
+            m_rxBuffer.clear();
+
+            m_deviceConnected = true;
+
+            if (m_titleBar && m_titleBar->powerButton())
+                m_titleBar->powerButton()->setChecked(true);
+
+            return;
+        }
+
+        if (m_rxBuffer.size() > 256)
+            m_rxBuffer.clear();
+        return;
+    }
+
+    // ---------- 正在等断开响应 ----------
+    if (m_disconnectPending) {
+        const QByteArray expect = QByteArray::fromHex("01010101");
+
+        if (m_rxBuffer.contains(expect)) {
+            qDebug() << "[握手] 收到断开响应，成功";
+
+            m_disconnectPending = false;
+            m_disconnectTimeout->stop();
+            m_rxBuffer.clear();
+
+            closeSerialPort();
+            return;
+        }
+
+        if (m_rxBuffer.size() > 256)
+            m_rxBuffer.clear();
+        return;
+    }
+
+    // ---------- 正常通信 ----------
+    if (m_deviceConnected && m_titleBar)
+        m_titleBar->flashPowerButton();
+
+    m_rxBuffer.clear();
 }
 
 // ============================================================
-// 打开串口
+// ⭐ 统一握手入口：打开串口 + 发送连接帧
+// ============================================================
+void MainWindow::startConnectHandshake(const QString &portName)
+{
+    if (portName.isEmpty())
+        return;
+
+    qDebug() << "[握手] 开始连接：" << portName;
+
+    // 1. 打开串口（内部不置蓝）
+    openSerialPort(portName);
+
+    if (!m_serialPort || !m_serialPort->isOpen()) {
+        qWarning() << "[握手] 串口打开失败，无法发送连接帧";
+        return;
+    }
+
+    // 2. 发送连接帧，启动超时
+    m_connectPending = true;
+    m_rxBuffer.clear();
+    m_connectTimeout->start();
+
+    QByteArray frame;
+    frame.append(char(0x00));
+    frame.append(char(0x01));
+    frame.append(char(0x00));
+    frame.append(char(0x01));
+    frame = ModbusRTU::buildFrame(frame);
+
+    qDebug() << "[TX][连接]" << hexDump(frame)
+             << " 端口：" << portName;
+    m_serialPort->write(frame);
+    m_serialPort->flush();
+}
+
+// ============================================================
+// 卡片点击后：调用统一握手入口
+// ============================================================
+void MainWindow::onConnectRequested(const QString &portName)
+{
+    qDebug() << "[状态] 用户点击卡片连接：" << portName;
+    startConnectHandshake(portName);
+}
+
+// ============================================================
+// 打开串口：只打开，不置蓝
 // ============================================================
 void MainWindow::openSerialPort(const QString &portName)
 {
-    if (m_serialPort->isOpen()) {
+    if (m_serialPort->isOpen())
         m_serialPort->close();
-    }
+
+    m_rxBuffer.clear();
 
     m_serialPort->setPortName(portName);
     m_serialPort->setBaudRate(QSerialPort::Baud115200);
@@ -244,9 +448,16 @@ void MainWindow::openSerialPort(const QString &portName)
     m_serialPort->setFlowControl(QSerialPort::NoFlowControl);
 
     if (m_serialPort->open(QIODevice::ReadWrite)) {
-        qDebug() << "串口已打开:" << portName;
+        qDebug() << "[串口] 已打开：" << portName;
+        m_currentPortName = portName;
     } else {
-        qDebug() << "串口打开失败:" << m_serialPort->errorString();
+        qWarning() << "[串口] 打开失败：" << m_serialPort->errorString();
+
+        m_deviceConnected = false;
+        m_currentPortName.clear();
+
+        if (m_titleBar && m_titleBar->powerButton())
+            m_titleBar->powerButton()->setChecked(false);
     }
 }
 
@@ -255,8 +466,196 @@ void MainWindow::openSerialPort(const QString &portName)
 // ============================================================
 void MainWindow::closeSerialPort()
 {
-    if (m_serialPort->isOpen()) {
+    if (m_serialPort && m_serialPort->isOpen()) {
         m_serialPort->close();
-        qDebug() << "串口已关闭";
+        qDebug() << "[串口] 已关闭";
     }
+
+    m_deviceConnected   = false;
+    m_currentPortName.clear();
+
+    m_connectPending    = false;
+    m_disconnectPending = false;
+    if (m_connectTimeout)    m_connectTimeout->stop();
+    if (m_disconnectTimeout) m_disconnectTimeout->stop();
+
+    if (m_titleBar && m_titleBar->powerButton())
+        m_titleBar->powerButton()->setChecked(false);
+}
+
+// ============================================================
+// 工具函数
+// ============================================================
+QStringList MainWindow::allAvailablePorts() const
+{
+    QStringList list;
+    const auto ports = QSerialPortInfo::availablePorts();
+    for (const auto &info : ports)
+        list << info.portName();
+    return list;
+}
+
+bool MainWindow::isPortAvailable(const QString &portName) const
+{
+    if (portName.isEmpty()) return false;
+    const auto ports = QSerialPortInfo::availablePorts();
+    for (const auto &info : ports) {
+        if (info.portName() == portName)
+            return true;
+    }
+    return false;
+}
+
+// ============================================================
+// 统一扫描入口
+// ============================================================
+void MainWindow::startScan(const QStringList &ports)
+{
+    if (ports.isEmpty()) {
+        qDebug() << "[Scan] 没有可扫描的串口";
+        return;
+    }
+    if (m_scanInProgress) {
+        qDebug() << "[Scan] 扫描进行中，跳过本次请求";
+        return;
+    }
+
+    if (m_devicePrompt)
+        m_devicePrompt->hide();
+
+    m_scanInProgress = true;
+
+    qDebug() << "[Scan] 开始扫描：" << ports;
+
+    m_scanner->startScan(
+        ports,
+        0x00, 0x01,
+        QByteArray(2, '\0'),
+        QByteArray::fromHex("0101"),
+        7,
+        200, 115200);
+}
+
+// ============================================================
+// showEvent：启动时扫一次全部
+// ============================================================
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+
+    static bool started = false;
+    if (started) return;
+    started = true;
+
+    QTimer::singleShot(150, this, [this]{
+        if (!m_scanner) return;
+
+        m_knownPorts = allAvailablePorts();
+        qDebug() << "[Scan] 启动扫描，串口列表：" << m_knownPorts;
+
+        if (!m_knownPorts.isEmpty())
+            startScan(m_knownPorts);
+    });
+}
+
+// ============================================================
+// 定时器：只扫新串口 / 检测已连接串口被拔
+// ============================================================
+void MainWindow::checkForNewPorts()
+{
+    if (m_scanInProgress)
+        return;
+
+    QStringList currentPorts = allAvailablePorts();
+
+    if (m_deviceConnected && !currentPorts.contains(m_currentPortName)) {
+        qDebug() << "[状态] 连接中串口被拔掉：" << m_currentPortName;
+
+        closeSerialPort();
+        m_deviceFound = false;
+        m_foundPortName.clear();
+    }
+
+    QStringList newPorts;
+    for (const QString &p : currentPorts) {
+        if (!m_knownPorts.contains(p))
+            newPorts << p;
+    }
+
+    m_knownPorts = currentPorts;
+
+    if (m_deviceConnected || m_deviceFound)
+        return;
+
+    if (!newPorts.isEmpty()) {
+        qDebug() << "[Scan] 检测到新串口：" << newPorts;
+        startScan(newPorts);
+    }
+}
+
+// ============================================================
+// 扫描到设备
+// ============================================================
+void MainWindow::onDeviceFound(const QString &portName)
+{
+    qDebug() << "[Scan] 发现设备：" << portName;
+
+    m_foundPortName = portName;
+    m_deviceFound = true;
+
+    if (m_scanner)
+        m_scanner->stopScan();
+
+    if (m_devicePrompt)
+        m_devicePrompt->setDeviceFound(portName);
+}
+
+// ============================================================
+// 扫描结束
+// ============================================================
+void MainWindow::onScanFinished()
+{
+    m_scanInProgress = false;
+    qDebug() << "[Scan] 扫描结束，found =" << m_deviceFound
+             << " connected =" << m_deviceConnected;
+
+    if (!m_deviceFound && !m_deviceConnected && m_devicePrompt)
+        m_devicePrompt->setDeviceNotFound();
+}
+
+// ============================================================
+// 连接超时
+// ============================================================
+void MainWindow::onConnectTimeout()
+{
+    if (!m_connectPending)
+        return;
+
+    qDebug() << "[握手] 连接超时，未收到响应";
+
+    m_connectPending = false;
+    m_rxBuffer.clear();
+
+    closeSerialPort();
+
+    QMessageBox::warning(
+        this,
+        QStringLiteral("连接失败"),
+        QStringLiteral("设备未响应，请重试。"));
+}
+
+// ============================================================
+// 断开超时
+// ============================================================
+void MainWindow::onDisconnectTimeout()
+{
+    if (!m_disconnectPending)
+        return;
+
+    qDebug() << "[握手] 断开超时，未收到响应，强制关闭串口";
+
+    m_disconnectPending = false;
+    m_rxBuffer.clear();
+
+    closeSerialPort();
 }
