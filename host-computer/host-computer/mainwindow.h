@@ -7,7 +7,7 @@
 #include <QString>
 #include <QStringList>
 #include <QByteArray>
-
+#include "settingspanel.h"
 #include "modbus_rtu.h"
 
 class TitleBar;
@@ -38,6 +38,9 @@ private slots:
     void onOpenBackgroundDialog();
     void onPowerToggled(bool checked);
     void onSerialDataReceived();
+    void onOpenOtaUpgrade();     // OTA升级子窗口接收槽
+
+
 
     void onDeviceFound(const QString &portName);
     void onScanFinished();

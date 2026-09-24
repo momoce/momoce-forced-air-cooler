@@ -9,7 +9,6 @@ SettingsPanel::SettingsPanel(QWidget *parent)
 
 void SettingsPanel::setupUI()
 {
-    // ---- 菜单整体样式（白底、圆角、绿色高亮） ----
     setStyleSheet(
         "QMenu {"
         "    background-color: rgba(255, 255, 255, 245);"
@@ -39,10 +38,10 @@ void SettingsPanel::setupUI()
     connect(actBg, &QAction::triggered,
             this, &SettingsPanel::backgroundSettingsRequested);
 
-    // ---- 分隔线 ----
     addSeparator();
 
-    // 预留：以后加更多功能
-    // QAction *actTheme = addAction(QStringLiteral("切换主题"));
-    // QAction *actAbout = addAction(QStringLiteral("关于"));
+    // ---- 菜单项 2：OTA升级（点一下直接发信号，弹出子窗口） ----
+    QAction *actOta = addAction(QStringLiteral("OTA升级"));
+    connect(actOta, &QAction::triggered,
+            this, &SettingsPanel::otaUpgradeRequested);
 }

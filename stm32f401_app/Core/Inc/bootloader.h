@@ -4,19 +4,22 @@
  * @brief   STM32F401RCT6 OTA Bootloader 头文件
  * @note    芯片: STM32F401RCT6 (Flash 256KB, 扇区: 16/16/16/16/64/128 KB)
  *
- *          分区布局 (A/B 双区方案):
+ *          分区布局 (A/B 双区 + 缓存区方案):
  *          ---------------------------------------------------------------
  *          地址范围                    名称         大小      用途
  *          ---------------------------------------------------------------
  *          0x08000000 ~ 0x08003FFF    Bootloader   16KB      引导程序
- *          0x08004000 ~ 0x08017FFF    APP_A        80KB      当前运行区
- *          0x08018000 ~ 0x0802BFFF    APP_B        80KB      升级备份区
- *          0x0802C000 ~ 0x0802FFFF    FLAG         16KB      升级标志/固件信息
- *          0x08030000 ~ 0x0803FFFF    预留         64KB      备用
+ *          0x08004000 ~ 0x08007FFF    FLAG         16KB      升级标志/固件信息
+ *          0x08008000 ~ 0x0800FFFF    APP_A        32KB      当前运行区
+ *          0x08010000 ~ 0x08017FFF    APP_B        32KB      升级备份区
+ *          0x08020000 ~ 0x08027FFF    CACHE        32KB      OTA 缓存区
  *          ---------------------------------------------------------------
  *
- *          App 工程的链接起始地址必须与 APP_A_ADDR / APP_B_ADDR 一致,
- *          并在 App 启动时重定位中断向量表 (SCB->VTOR)。
+ *          注意:
+ *          - APP_B 落在 Sector 4 (64KB), 实际擦除会擦掉整个 64KB;
+ *          - CACHE 落在 Sector 5 (128KB), 实际擦除会擦掉整个 128KB;
+ *          - App 工程的链接起始地址必须与 APP_A_ADDR / APP_B_ADDR 一致,
+ *            并在 App 启动时重定位中断向量表 (SCB->VTOR)。
  ******************************************************************************
  */
 
@@ -40,23 +43,27 @@ extern "C" {
 
 #define APP_VERSION             0x001UL         /* 初始版本 v0.01 */
 
-/* Bootloader 区 */
-#define BOOTLOADER_ADDR         (FLASH_BASE_ADDR + 0x0000UL)
+/* Bootloader 区 (Sector 0, 16KB) */
+#define BOOTLOADER_ADDR         (FLASH_BASE_ADDR + 0x0000UL)   /* 0x08000000 */
 #define BOOTLOADER_SIZE         (16 * 1024UL)
 
-/* App 运行区 (A) */
-#define APP_A_ADDR              (BOOTLOADER_ADDR + BOOTLOADER_SIZE)   /* 0x08004000 */
-#define APP_A_SIZE              (80 * 1024UL)
-
-/* App 备份区 (B) */
-#define APP_B_ADDR              (APP_A_ADDR + APP_A_SIZE)             /* 0x08018000 */
-#define APP_B_SIZE              (80 * 1024UL)
-
-/* 升级标志区 (存 BootFlag_t) */
-#define FLAG_ADDR               (APP_B_ADDR + APP_B_SIZE)             /* 0x0802C000 */
+/* 升级标志区 (Sector 1, 16KB) */
+#define FLAG_ADDR               (FLASH_BASE_ADDR + 0x4000UL)   /* 0x08004000 */
 #define FLAG_SIZE               (16 * 1024UL)
 
-/* 固件最大长度 (应小于 App 区大小) */
+/* App 运行区 A (Sector 2 + 3, 32KB) */
+#define APP_A_ADDR              (FLASH_BASE_ADDR + 0x8000UL)   /* 0x08008000 */
+#define APP_A_SIZE              (32 * 1024UL)
+
+/* App 备份区 B (Sector 4 前半, 32KB, 实占 64KB) */
+#define APP_B_ADDR              (FLASH_BASE_ADDR + 0x10000UL)  /* 0x08010000 */
+#define APP_B_SIZE              (32 * 1024UL)
+
+/* OTA 缓存区 (Sector 5 前半, 32KB, 实占 128KB) */
+#define CACHE_ADDR              (FLASH_BASE_ADDR + 0x20000UL)  /* 0x08020000 */
+#define CACHE_SIZE              (32 * 1024UL)
+
+/* 固件最大长度 (应小于 App 区大小, 留出固件头空间) */
 #define APP_MAX_SIZE            (APP_A_SIZE - 16UL)
 
 /* ============================================================================
@@ -122,7 +129,8 @@ void Bootloader_Init(void);
 
 /**
  * @brief   Bootloader 主流程: 检查升级标志
- *          - 有 PENDING 标志: 校验新固件 -> 成功则切换启动, 失败则回退旧固件
+ *          - 有 PENDING 标志: 校验缓存区固件 -> 成功则搬运到 App 区并启动,
+ *            失败则回退旧固件
  *          - 无升级任务: 直接跳转 App
  */
 void Bootloader_Run(void);

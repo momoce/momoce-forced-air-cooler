@@ -2,8 +2,10 @@
 #include "titlebar.h"
 #include "settingspanel.h"
 #include "backgrounddialog.h"
+#include "otaupgradedialog.h"      // OTA升级子窗口接收槽
 #include "modbus_rtu.h"
 #include "devicepromptwidget.h"
+
 
 #include <QPainter>
 #include <QPainterPath>
@@ -48,7 +50,7 @@ MainWindow::MainWindow(QWidget *parent)
              geo.y() + (geo.height() - height()) / 2);
     }
 
-    setWindowTitle(QStringLiteral("压风式散热器v0.0.1"));
+    setWindowTitle(QStringLiteral("压风式散热器v0.0.2"));
     updateLayout();
 }
 
@@ -65,7 +67,7 @@ void MainWindow::setupUI()
 {
     // ---- 1. 标题栏 ----
     m_titleBar = new TitleBar(this);
-    m_titleBar->setTitle(QStringLiteral("压风式散热器v0.0.1"));
+    m_titleBar->setTitle(QStringLiteral("压风式散热器v0.0.2"));
 
     connect(m_titleBar, &TitleBar::gearClicked,
             this, &MainWindow::onGearClicked);
@@ -81,9 +83,14 @@ void MainWindow::setupUI()
             this, &MainWindow::onPowerToggled);
 
     // ---- 2. 设置菜单 ----
+
     m_settingsMenu = new SettingsPanel(this);
     connect(m_settingsMenu, &SettingsPanel::backgroundSettingsRequested,
             this, &MainWindow::onOpenBackgroundDialog);
+
+    // OTA 升级连接
+    connect(m_settingsMenu, &SettingsPanel::otaUpgradeRequested,
+            this, &MainWindow::onOpenOtaUpgrade);
 
     // ---- 3. 串口对象 ----
     m_serialPort = new QSerialPort(this);
@@ -136,6 +143,8 @@ void MainWindow::setupUI()
             this, &MainWindow::onHeartbeatTimeout);
 
     m_knownPorts = allAvailablePorts();
+
+
 }
 
 // ============================================================
@@ -627,7 +636,7 @@ void MainWindow::startScan(const QStringList &ports)
         0x00, 0x01,
         QByteArray(2, '\0'),
         QByteArray::fromHex("0101"),
-        7,
+        6,
         200, 115200);
 }
 
@@ -794,4 +803,34 @@ void MainWindow::onDisconnectTimeout()
     m_rxBuffer.clear();
 
     closeSerialPort();
+}
+
+
+
+//OTA升级子菜单的相关执行函数
+void MainWindow::onOpenOtaUpgrade()
+{
+    // 1. 暂停心跳
+    bool wasHeartbeatActive = m_heartbeatTimer && m_heartbeatTimer->isActive();
+    stopHeartbeat();
+
+    // 2. 断开 readyRead，避免 MainWindow 抢 OTA 响应
+    if (m_serialPort) {
+        disconnect(m_serialPort, &QSerialPort::readyRead,
+                   this, &MainWindow::onSerialDataReceived);
+    }
+
+    // 3. 打开 OTA 对话框（把串口传进去，WiFi 模式内部会新建 TCP）
+    OtaUpgradeDialog dlg(m_serialPort, this);
+    dlg.exec();
+
+    // 4. 恢复 readyRead 和心跳
+    if (m_serialPort) {
+        connect(m_serialPort, &QSerialPort::readyRead,
+                this, &MainWindow::onSerialDataReceived);
+    }
+
+    if (wasHeartbeatActive && m_serialPort && m_serialPort->isOpen()) {
+        startHeartbeat();
+    }
 }

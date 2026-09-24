@@ -168,15 +168,19 @@ void SysTick_Handler(void)
   */
 void USART1_IRQHandler(void)
 {
-    /* 交给 HAL 处理 RXNE 等，最终会调用 HAL_UART_RxCpltCallback */
-    HAL_UART_IRQHandler(&huart1);
-
-    /* IDLE 中断：一帧接收结束，通知 Modbus 任务 */
-    if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE) != RESET)
+    /* ---- 1. 先处理 IDLE 中断（一帧结束） ---- */
+    if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE) != RESET &&
+        __HAL_UART_GET_IT_SOURCE(&huart1, UART_IT_IDLE) != RESET)
     {
+        /* 清 IDLE 标志（读 SR + 读 DR） */
         __HAL_UART_CLEAR_IDLEFLAG(&huart1);
+
+        /* 通知 OTA 或 Modbus 任务 */
         Modbus_FrameCompleteFromISR();
     }
+
+    /* ---- 2. 再处理 RXNE / 错误中断 ---- */
+    HAL_UART_IRQHandler(&huart1);
 }
 
 /* USER CODE END 1 */

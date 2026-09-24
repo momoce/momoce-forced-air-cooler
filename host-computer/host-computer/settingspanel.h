@@ -3,7 +3,6 @@
 
 #include <QMenu>
 
-// 设置菜单
 class SettingsPanel : public QMenu
 {
     Q_OBJECT
@@ -12,7 +11,8 @@ public:
     explicit SettingsPanel(QWidget *parent = nullptr);
 
 signals:
-    void backgroundSettingsRequested();    // 用户点了"设置背景"
+    void backgroundSettingsRequested();
+    void otaUpgradeRequested();      // 点击 OTA升级 时发出
 
 private:
     void setupUI();

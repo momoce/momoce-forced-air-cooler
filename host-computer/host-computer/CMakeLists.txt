@@ -9,9 +9,9 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ⭐ 加上 SerialPort
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets SerialPort)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets SerialPort)
+# ⭐ 加上 SerialPort 和 Network
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets SerialPort Network)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets SerialPort Network)
 
 set(PROJECT_SOURCES
         main.cpp
@@ -42,6 +42,10 @@ set(PROJECT_SOURCES
         devicepromptwidget.h
         devicepromptwidget.cpp
 
+        # ⭐ OTA 升级子窗口
+        otaupgradedialog.h
+        otaupgradedialog.cpp
+
         # ⭐ 资源文件（图片）
         resources.qrc
 )
@@ -63,10 +67,11 @@ else()
     endif()
 endif()
 
-# ⭐ 链接 SerialPort
+# ⭐ 链接 SerialPort 和 Network
 target_link_libraries(host-computer PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::SerialPort
+    Qt${QT_VERSION_MAJOR}::Network
 )
 
 if(${QT_VERSION} VERSION_LESS 6.1.0)

@@ -48,7 +48,7 @@
             <NotGenerated>0</NotGenerated>
             <InvalidFlash>1</InvalidFlash>
           </TargetStatus>
-          <OutputDirectory>stm32f401\</OutputDirectory>
+          <OutputDirectory>.\stm32f401\</OutputDirectory>
           <OutputName>stm32f401</OutputName>
           <CreateExecutable>1</CreateExecutable>
           <CreateLib>0</CreateLib>
@@ -60,9 +60,9 @@
           <Merge32K>0</Merge32K>
           <CreateBatchFile>0</CreateBatchFile>
           <BeforeCompile>
-            <RunUserProg1>0</RunUserProg1>
+            <RunUserProg1>1</RunUserProg1>
             <RunUserProg2>0</RunUserProg2>
-            <UserProg1Name></UserProg1Name>
+            <UserProg1Name>fromelf --bin --output=.\Objects\your_project.bin .\Objects\your_project.axf</UserProg1Name>
             <UserProg2Name></UserProg2Name>
             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
             <UserProg2Dos16Mode>0</UserProg2Dos16Mode>
@@ -138,7 +138,7 @@
           </Flash1>
           <bUseTDR>1</bUseTDR>
           <Flash2>BIN\UL2V8M.DLL</Flash2>
-          <Flash3></Flash3>
+          <Flash3>"" ()</Flash3>
           <Flash4></Flash4>
           <pFcarmOut></pFcarmOut>
           <pFcarmGrp></pFcarmGrp>
@@ -276,7 +276,7 @@
               </OCR_RVCT3>
               <OCR_RVCT4>
                 <Type>1</Type>
-                <StartAddress>0x8004000</StartAddress>
+                <StartAddress>0x8008000</StartAddress>
                 <Size>0x14000</Size>
               </OCR_RVCT4>
               <OCR_RVCT5>
@@ -428,6 +428,11 @@
               <FileName>modbus_rtu.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\Core\Src\modbus_rtu.c</FilePath>
+            </File>
+            <File>
+              <FileName>OTA.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Inc\OTA.c</FilePath>
             </File>
           </Files>
         </Group>

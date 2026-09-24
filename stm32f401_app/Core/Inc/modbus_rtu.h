@@ -8,8 +8,8 @@
 /* 本机 Modbus 从站地址（按实际修改） */
 
 
-
-
+extern uint8_t modbus_rx_byte;          /* 或者写成 static uint8_t modbus_rx_byte; */
+extern TaskHandle_t modbus_task_handle;
 #define MODBUS_RX_BUF_SIZE      256
 #define MODBUS_TX_BUF_SIZE      256
 
