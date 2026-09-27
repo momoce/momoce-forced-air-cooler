@@ -16,55 +16,61 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
+
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f4xx_it.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "modbus_rtu.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
+
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN TD */
 /* USER CODE END TD */
+
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 /* USER CODE END PD */
+
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 /* USER CODE END PM */
+
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 /* USER CODE END PV */
+
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
 /* USER CODE END PFP */
+
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 /* USER CODE END 0 */
+
 /* External variables --------------------------------------------------------*/
 /* USER CODE BEGIN EV */
 /* USER CODE END EV */
+
 /******************************************************************************/
 /*           Cortex-M4 Processor Interruption and Exception Handlers          */
 /******************************************************************************/
-/**
-  * @brief This function handles Non maskable interrupt.
-  */
+
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
-   while (1)
+  while (1)
   {
   }
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
-/**
-  * @brief This function handles Hard fault interrupt.
-  */
+
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
@@ -75,9 +81,7 @@ void HardFault_Handler(void)
     /* USER CODE END W1_HardFault_IRQn 0 */
   }
 }
-/**
-  * @brief This function handles Memory management fault.
-  */
+
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
@@ -88,9 +92,7 @@ void MemManage_Handler(void)
     /* USER CODE END W1_MemoryManagement_IRQn 0 */
   }
 }
-/**
-  * @brief This function handles Pre-fetch fault, memory access fault.
-  */
+
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
@@ -101,9 +103,7 @@ void BusFault_Handler(void)
     /* USER CODE END W1_BusFault_IRQn 0 */
   }
 }
-/**
-  * @brief This function handles Undefined instruction or illegal state.
-  */
+
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
@@ -114,9 +114,7 @@ void UsageFault_Handler(void)
     /* USER CODE END W1_UsageFault_IRQn 0 */
   }
 }
-/**
-  * @brief This function handles Debug monitor.
-  */
+
 void DebugMon_Handler(void)
 {
   /* USER CODE BEGIN DebugMonitor_IRQn 0 */
@@ -124,14 +122,14 @@ void DebugMon_Handler(void)
   /* USER CODE BEGIN DebugMonitor_IRQn 1 */
   /* USER CODE END DebugMonitor_IRQn 1 */
 }
-/**
-  * @brief This function handles System tick timer.
-  */
+
 void SysTick_Handler(void)
 {
   /* USER CODE BEGIN SysTick_IRQn 0 */
   /* USER CODE END SysTick_IRQn 0 */
+
   HAL_IncTick();
+
 #if (INCLUDE_xTaskGetSchedulerState == 1 )
   if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)
   {
@@ -140,48 +138,26 @@ void SysTick_Handler(void)
 #if (INCLUDE_xTaskGetSchedulerState == 1 )
   }
 #endif /* INCLUDE_xTaskGetSchedulerState */
+
   /* USER CODE BEGIN SysTick_IRQn 1 */
   /* USER CODE END SysTick_IRQn 1 */
 }
+
 /******************************************************************************/
 /* STM32F4xx Peripheral Interrupt Handlers                                    */
-/* Add here the Interrupt Handlers for the used peripherals.                  */
-/* For the available peripheral interrupt handler names,                      */
-/* please refer to the startup file (startup_stm32f4xx.s).                    */
 /******************************************************************************/
-/* USER CODE BEGIN 1 */
-/* ==========================================================================
- * ???? (USART1) - ???????????
- * CubeMX ??? NVIC ??????????, ???????
- * ???????? main.c ?, ????????
- * ==========================================================================*/
 
 /* USER CODE BEGIN 1 */
 
 /**
   * @brief  USART1 中断服务函数
-  * @note   真正的中断启动在 Modbus_Init() 里完成：
-  *           - NVIC 使能 USART1_IRQn
-  *           - 使能 IDLE 中断
-  *           - HAL_UART_Receive_IT 启动单字节接收
-  *         这里只负责把中断分发给 HAL 和 Modbus 模块。
+  * @note   方案 A：不再手动清 IDLE 标志，全部交给 HAL 处理。
+  *         HAL_UART_IRQHandler 内部会检测 IDLE，并调用
+  *         HAL_UARTEx_RxEventCallback（在 modbus_rtu.c 中实现）。
   */
 void USART1_IRQHandler(void)
 {
-    /* ---- 1. 先处理 IDLE 中断（一帧结束） ---- */
-    if (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE) != RESET &&
-        __HAL_UART_GET_IT_SOURCE(&huart1, UART_IT_IDLE) != RESET)
-    {
-        /* 清 IDLE 标志（读 SR + 读 DR） */
-        __HAL_UART_CLEAR_IDLEFLAG(&huart1);
-
-        /* 通知 OTA 或 Modbus 任务 */
-        Modbus_FrameCompleteFromISR();
-    }
-
-    /* ---- 2. 再处理 RXNE / 错误中断 ---- */
     HAL_UART_IRQHandler(&huart1);
 }
 
-/* USER CODE END 1 */
 /* USER CODE END 1 */

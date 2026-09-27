@@ -2,83 +2,97 @@
 #define OTAUPGRADEDIALOG_H
 
 #include <QDialog>
-#include <QString>
 #include <QByteArray>
+#include <QString>
 
-class QLabel;
-class QPushButton;
-class QPlainTextEdit;
-class QProgressBar;
-class QSpinBox;
-class QLineEdit;
-class QRadioButton;
 class QSerialPort;
 class QTcpSocket;
+class QTimer;
+
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QRadioButton;
+class QSpinBox;
+class QProgressBar;
+class QPlainTextEdit;
 
 class OtaUpgradeDialog : public QDialog
 {
     Q_OBJECT
 
 public:
-    explicit OtaUpgradeDialog(QSerialPort *serialPort,
-                              QWidget *parent = nullptr);
+    explicit OtaUpgradeDialog(QSerialPort *serialPort, QWidget *parent = nullptr);
     ~OtaUpgradeDialog() override;
 
 private slots:
     void onSelectFile();
-    void onStartUpgrade();
+    void onSendFirmware();     // 原 onStartUpgrade
+    void onRebootUpgrade();
+    void onPollRxData();
 
 private:
     void setupUI();
     void setUiBusy(bool busy);
     void appendLog(const QString &text);
+    void appendRxLog(const QByteArray &data);
 
+    bool isWifiMode() const;
     bool loadBinFile(const QString &path);
 
-    bool sendOtaStartCommand();
-    bool waitOtaStartAck(int timeoutMs = 1500);
-    bool sendFirmwareData();
-    bool sendOtaDoneCommand();
-    bool waitOtaDoneAck(int timeoutMs = 3000);
-
+    // 底层传输
     bool       openTransport();
     void       closeTransport();
     qint64     writeBytes(const QByteArray &data);
     QByteArray readBytes(int timeoutMs);
-    bool       isWifiMode() const;
+
+    // 协议
+    bool sendOtaStartCommand();
+    bool waitOtaStartAck(int timeoutMs);
+    bool waitOtaReady(int timeoutMs);      // ★ 新增：等待 OTA_READY
+    bool sendFirmwareData();
+    bool sendRebootCommand();
+    bool waitRebootAck(int timeoutMs);
 
 private:
-    QSerialPort    *m_serialPort = nullptr;
-    QTcpSocket     *m_tcpSocket  = nullptr;
+    QSerialPort *m_serialPort = nullptr;
+    QTcpSocket  *m_tcpSocket  = nullptr;
+    QTimer      *m_rxTimer    = nullptr;
 
-    // ---- 升级方式 ----
-    QRadioButton   *m_rdoWired   = nullptr;
-    QRadioButton   *m_rdoWifi    = nullptr;
-    QLabel         *m_lblWifiIp  = nullptr;
-    QLineEdit      *m_editWifiIp = nullptr;
-    QLabel         *m_lblWifiPort  = nullptr;
-    QLineEdit      *m_editWifiPort = nullptr;
+    bool        m_upgrading   = false;
+    QByteArray  m_fileData;
+    QString     m_filePath;
+    quint16     m_fileCrc     = 0;
 
-    // ---- 传输参数 ----
-    QSpinBox       *m_spinChunkSize  = nullptr;   // 每包字节数
-    QSpinBox       *m_spinIntervalMs = nullptr;   // 包间隔毫秒
+    // 升级方式
+    QRadioButton *m_rdoWired = nullptr;
+    QRadioButton *m_rdoWifi  = nullptr;
 
-    // ---- 文件 ----
-    QLabel         *m_lblFile    = nullptr;
-    QLabel         *m_lblSize    = nullptr;
-    QLabel         *m_lblCrc     = nullptr;
-    QLabel         *m_lblStatus  = nullptr;
-    QProgressBar   *m_progress   = nullptr;
-    QPlainTextEdit *m_log        = nullptr;
+    // WiFi 参数
+    QLabel    *m_lblWifiIp    = nullptr;
+    QLineEdit *m_editWifiIp   = nullptr;
+    QLabel    *m_lblWifiPort  = nullptr;
+    QLineEdit *m_editWifiPort = nullptr;
 
-    QPushButton    *m_btnSelect  = nullptr;
-    QPushButton    *m_btnStart   = nullptr;
-    QPushButton    *m_btnClose   = nullptr;
+    // 文件
+    QPushButton *m_btnSelect = nullptr;
+    QLabel      *m_lblFile   = nullptr;
+    QLabel      *m_lblSize   = nullptr;
+    QLabel      *m_lblCrc    = nullptr;
 
-    QString    m_filePath;
-    QByteArray m_fileData;
-    quint16    m_fileCrc = 0;
-    bool       m_upgrading = false;
+    // 传输参数
+    QSpinBox *m_spinChunkSize  = nullptr;
+    QSpinBox *m_spinIntervalMs = nullptr;
+
+    // 进度 / 状态
+    QProgressBar    *m_progress = nullptr;
+    QLabel          *m_lblStatus = nullptr;
+    QPlainTextEdit  *m_log       = nullptr;
+
+    // 按钮
+    QPushButton *m_btnClose        = nullptr;
+    QPushButton *m_btnReboot       = nullptr;
+    QPushButton *m_btnSendFirmware = nullptr;
 };
 
 #endif // OTAUPGRADEDIALOG_H

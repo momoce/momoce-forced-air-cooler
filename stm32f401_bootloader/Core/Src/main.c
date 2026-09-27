@@ -20,7 +20,6 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "bootloader.h"
-
 I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim3;
@@ -38,8 +37,7 @@ static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 void StartDefaultTask(void *argument);
-
-	
+	const char *msg = "123";
 int main(void)
 {
     /* ---- 1. HAL 初始化 ---- */
@@ -54,7 +52,9 @@ int main(void)
     MX_TIM3_Init();
     MX_USART1_UART_Init();
     MX_USART2_UART_Init();
+	 //HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), 100);
 			Bootloader_Run();
+	//HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), 100);
     while (1)
     {
     }

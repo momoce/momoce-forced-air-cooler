@@ -2,7 +2,6 @@
 #include "bootloader.h"
 
 #define MODBUS_RX_BUF_SIZE 256
-uint8_t modbus_rx_buf[MODBUS_RX_BUF_SIZE];
 
 /**
   * @brief  计算 CRC16/MODBUS

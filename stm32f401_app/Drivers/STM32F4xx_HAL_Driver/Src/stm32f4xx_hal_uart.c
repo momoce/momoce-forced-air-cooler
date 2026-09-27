@@ -3759,7 +3759,7 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
   /*-------------------------- USART CR3 Configuration -----------------------*/
   /* Configure the UART HFC: Set CTSE and RTSE bits according to huart->Init.HwFlowCtl value */
   MODIFY_REG(huart->Instance->CR3, (USART_CR3_RTSE | USART_CR3_CTSE), huart->Init.HwFlowCtl);
-
+	
 
 #if defined(USART6) && defined(UART9) && defined(UART10)
     if ((huart->Instance == USART1) || (huart->Instance == USART6) || (huart->Instance == UART9) || (huart->Instance == UART10))
@@ -3791,6 +3791,8 @@ static void UART_SetConfig(UART_HandleTypeDef *huart)
     huart->Instance->BRR = UART_BRR_SAMPLING16(pclk, huart->Init.BaudRate);
   }
 }
+
+
 
 /**
   * @}

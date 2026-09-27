@@ -1,11 +1,41 @@
 #include "bootloader.h"
 #include "stm32f4xx_hal.h"
 #include <string.h>
+#include <stdio.h>
 
 /* ============================================================================
- * CRC16/MODBUS 计算 (支持长度 > 65535)
- * 与 crc16.h 中的 Modbus_CRC16 算法完全一致:
- *   多项式 0x8005 (反射 0xA001), 初值 0xFFFF
+ * 外部依赖: UART 句柄
+ * ==========================================================================*/
+extern UART_HandleTypeDef huart1;
+
+/* ============================================================================
+ * 状态上报 (用于上位机监控 Bootloader 运行)
+ * ==========================================================================*/
+static void Bootloader_Notify(const char *tag, const char *detail)
+{
+    char buf[96];
+    int n;
+
+    if (detail != NULL)
+        n = snprintf(buf, sizeof(buf), "BOOT:%s,%s\r\n", tag, detail);
+    else
+        n = snprintf(buf, sizeof(buf), "BOOT:%s\r\n", tag);
+
+    if (n > 0)
+        HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, 100);
+}
+
+static void Bootloader_NotifyU32(const char *tag, const char *key, uint32_t val)
+{
+    char buf[96];
+    int n = snprintf(buf, sizeof(buf), "BOOT:%s,%s=%lu\r\n",
+                     tag, key, (unsigned long)val);
+    if (n > 0)
+        HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, 100);
+}
+
+/* ============================================================================
+ * CRC16/MODBUS
  * ==========================================================================*/
 static uint16_t Bootloader_CRC16_Calc(const uint8_t *data, uint32_t len)
 {
@@ -26,8 +56,7 @@ static uint16_t Bootloader_CRC16_Calc(const uint8_t *data, uint32_t len)
 }
 
 /* ============================================================================
- * 根据地址返回扇区编号，失败返回 -1
- * STM32F401RCT6 (256KB): S0~S3 = 16KB, S4 = 64KB, S5 = 128KB
+ * 根据地址返回扇区编号
  * ==========================================================================*/
 static int32_t Bootloader_GetSector(uint32_t addr)
 {
@@ -41,7 +70,7 @@ static int32_t Bootloader_GetSector(uint32_t addr)
 }
 
 /* ============================================================================
- * 擦除 Flash 指定区域 (逐扇区)
+ * 擦除 Flash
  * ==========================================================================*/
 bool Bootloader_FlashErase(uint32_t addr, uint32_t size)
 {
@@ -70,7 +99,7 @@ bool Bootloader_FlashErase(uint32_t addr, uint32_t size)
         erase.TypeErase    = FLASH_TYPEERASE_SECTORS;
         erase.Sector       = (uint32_t)sector;
         erase.NbSectors    = 1;
-        erase.VoltageRange = FLASH_VOLTAGE_RANGE_3;   /* 2.7V ~ 3.6V */
+        erase.VoltageRange = FLASH_VOLTAGE_RANGE_3;
 
         if (HAL_FLASHEx_Erase(&erase, &sector_error) != HAL_OK)
         {
@@ -78,10 +107,9 @@ bool Bootloader_FlashErase(uint32_t addr, uint32_t size)
             return false;
         }
 
-        /* 跳到下一个扇区的起始地址 */
-        if      (sector <= FLASH_SECTOR_3) start_addr += 0x4000;   /* 16KB */
-        else if (sector == FLASH_SECTOR_4) start_addr  = 0x08020000; /* 64KB */
-        else if (sector == FLASH_SECTOR_5) start_addr  = 0x08040000; /* 128KB */
+        if      (sector <= FLASH_SECTOR_3) start_addr += 0x4000;
+        else if (sector == FLASH_SECTOR_4) start_addr  = 0x08020000;
+        else if (sector == FLASH_SECTOR_5) start_addr  = 0x08040000;
         else { HAL_FLASH_Lock(); return false; }
     }
 
@@ -90,8 +118,7 @@ bool Bootloader_FlashErase(uint32_t addr, uint32_t size)
 }
 
 /* ============================================================================
- * 向 Flash 写数据
- * 优化: 先按字 (4 字节) 写, 剩余不足 4 字节的按字节写
+ * 写 Flash
  * ==========================================================================*/
 bool Bootloader_FlashWrite(uint32_t addr, const uint8_t *data, uint32_t len)
 {
@@ -101,7 +128,6 @@ bool Bootloader_FlashWrite(uint32_t addr, const uint8_t *data, uint32_t len)
 
     HAL_FLASH_Unlock();
 
-    /* 按字写 (地址必须 4 字节对齐才能用) */
     while ((i + 4 <= len) && ((addr + i) % 4 == 0))
     {
         uint32_t word = (uint32_t)data[i]
@@ -117,7 +143,6 @@ bool Bootloader_FlashWrite(uint32_t addr, const uint8_t *data, uint32_t len)
         i += 4;
     }
 
-    /* 剩余字节按字节写 */
     while (i < len)
     {
         if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, addr + i, data[i]) != HAL_OK)
@@ -133,24 +158,23 @@ bool Bootloader_FlashWrite(uint32_t addr, const uint8_t *data, uint32_t len)
 }
 
 /* ============================================================================
- * 校验 App 区固件 (magic + length + CRC16)
+ * 校验固件
  * ==========================================================================*/
 bool Bootloader_VerifyFirmware(uint32_t app_addr, const FirmwareHeader_t *hdr)
 {
     if (hdr == NULL) return false;
     if (hdr->magic != FW_HEADER_MAGIC) return false;
     if (hdr->length == 0 || hdr->length > APP_MAX_SIZE) return false;
-    if (app_addr < APP_A_ADDR || app_addr >= FLAG_ADDR) return false;
+    if (app_addr < APP_A_ADDR || app_addr >= 0x08040000) return false;
 
-    /* CRC 只对固件数据部分 (跳过 16 字节头) 计算 */
-    const uint8_t *fw_data = (const uint8_t *)(app_addr + FW_HEADER_SIZE);
+    const uint8_t *fw_data = (const uint8_t *)app_addr;
     uint16_t crc_calc = Bootloader_CRC16_Calc(fw_data, hdr->length);
 
     return (crc_calc == hdr->crc16);
 }
 
 /* ============================================================================
- * 解析接收缓冲区中的固件头
+ * 解析固件头
  * ==========================================================================*/
 bool Bootloader_ParseHeader(const uint8_t *buf, FirmwareHeader_t *hdr)
 {
@@ -161,18 +185,16 @@ bool Bootloader_ParseHeader(const uint8_t *buf, FirmwareHeader_t *hdr)
 }
 
 /* ============================================================================
- * 内部辅助: 检查 App 区是否具备基本可跳转条件
+ * App 可跳转性检查
  * ==========================================================================*/
 static bool Bootloader_IsAppValid(uint32_t app_addr)
 {
     uint32_t stack_top = *(__IO uint32_t *)app_addr;
     uint32_t reset_vec = *(__IO uint32_t *)(app_addr + 4);
 
-    /* STM32F401RC RAM: 0x20000000 ~ 0x2000FFFF (64KB) */
     if (stack_top < 0x20000000 || stack_top > 0x20010000)
         return false;
 
-    /* 复位向量必须在 Flash 区, 且 Thumb 位为 1 */
     if (reset_vec < 0x08000000 || reset_vec > 0x08040000)
         return false;
     if ((reset_vec & 1) == 0)
@@ -182,7 +204,7 @@ static bool Bootloader_IsAppValid(uint32_t app_addr)
 }
 
 /* ============================================================================
- * 跳转到指定 App 地址执行
+ * 跳转到 App
  * ==========================================================================*/
 void Bootloader_JumpToApp(uint32_t app_addr)
 {
@@ -193,35 +215,33 @@ void Bootloader_JumpToApp(uint32_t app_addr)
 
     if (!Bootloader_IsAppValid(app_addr))
     {
-        /* App 无效, 停留在 Bootloader, 可加 LED 提示 */
+        Bootloader_Notify("JUMP_FAIL", "app_invalid");
         return;
     }
 
     stack_top = *(__IO uint32_t *)app_addr;
     jump_addr = *(__IO uint32_t *)(app_addr + 4);
 
-    /* 关闭全局中断 */
+    Bootloader_NotifyU32("JUMP", "addr", app_addr);
+
+    /* 给上位机留点时间把消息收完 */
+    HAL_Delay(20);
+
     __disable_irq();
 
-    /* 关闭 SysTick */
     SysTick->CTRL = 0;
     SysTick->LOAD = 0;
     SysTick->VAL  = 0;
 
-    /* 清除所有中断使能与挂起标志 */
     for (uint8_t i = 0; i < 8; i++)
     {
         NVIC->ICER[i] = 0xFFFFFFFF;
         NVIC->ICPR[i] = 0xFFFFFFFF;
     }
 
-    /* 设置主堆栈指针 */
     __set_MSP(stack_top);
-
-    /* 设置向量表偏移 */
     SCB->VTOR = app_addr;
 
-    /* 跳转 (在 App 的 main 里会重新初始化中断) */
     JumpToApplication = (pFunction)jump_addr;
     JumpToApplication();
 
@@ -229,28 +249,38 @@ void Bootloader_JumpToApp(uint32_t app_addr)
 }
 
 /* ============================================================================
- * Bootloader 主流程: 判断是否需要升级
+ * Bootloader 主流程
  * ==========================================================================*/
 void Bootloader_Run(void)
 {
     BootFlag_t flag;
     FirmwareHeader_t hdr;
     uint32_t target_addr   = APP_A_ADDR;
-    uint32_t fallback_addr = APP_B_ADDR;
+    uint32_t fallback_addr = APP_A_ADDR;
 
-    /* 1. 读取 FLAG 区升级标志 */
+    Bootloader_Notify("POWERON", NULL);
+
     if (Bootloader_GetFlag(&flag))
     {
+        Bootloader_NotifyU32("FLAG_VALID", "state", flag.state);
+        Bootloader_NotifyU32("FLAG_INFO", "target", flag.target);
+        Bootloader_NotifyU32("FLAG_INFO", "length", flag.length);
+        Bootloader_NotifyU32("FLAG_INFO", "crc", flag.crc16);
+
         switch (flag.state)
         {
-        /* ----------------------------------------------------
-         * 已收到完整固件, 待校验并切换
+        /* --------------------------------------------------
+         * 待搬运: CACHE 区已有完整固件
          * -------------------------------------------------- */
         case UPDATE_STATE_PENDING:
+        {
+            Bootloader_Notify("STATE", "PENDING");
+
+            /* 决定目标区 */
             if (flag.target == TARGET_APP_A)
             {
                 target_addr   = APP_A_ADDR;
-                fallback_addr = APP_B_ADDR;
+                fallback_addr = APP_A_ADDR;
             }
             else if (flag.target == TARGET_APP_B)
             {
@@ -259,54 +289,93 @@ void Bootloader_Run(void)
             }
             else
             {
+                Bootloader_Notify("TARGET_INVALID", NULL);
                 Bootloader_ClearFlag();
                 Bootloader_JumpToApp(APP_A_ADDR);
                 break;
             }
 
-            /* 用升级标志中的信息构造固件头用于校验 */
+            Bootloader_NotifyU32("TARGET", "addr", target_addr);
+
+            /* 构造固件头用于校验 */
             hdr.magic    = FW_HEADER_MAGIC;
             hdr.version  = flag.version;
             hdr.length   = flag.length;
             hdr.crc16    = flag.crc16;
             hdr.reserved = 0;
 
-            if (Bootloader_VerifyFirmware(target_addr, &hdr))
+            /* ---- 1. 校验 CACHE 区 ---- */
+            Bootloader_Notify("VERIFY", "start");
+            if (!Bootloader_VerifyFirmware(CACHE_ADDR, &hdr))
             {
-                Bootloader_ClearFlag();
-                Bootloader_JumpToApp(target_addr);
-            }
-            else
-            {
-                /* 校验失败: 标记 ABORT, 回退旧固件 */
+                Bootloader_Notify("VERIFY", "fail");
                 flag.state = UPDATE_STATE_ABORT;
                 Bootloader_SetFlag(&flag);
                 Bootloader_JumpToApp(fallback_addr);
+                break;
             }
-            break;
+            Bootloader_Notify("VERIFY", "ok");
 
-        /* ----------------------------------------------------
-         * 上次正在接收固件, 中途断电 / 未完成
-         * 这里选择清除标志并回退到旧固件
+            /* ---- 2. 擦除目标区 ---- */
+            Bootloader_Notify("ERASE", "start");
+            if (!Bootloader_FlashErase(target_addr, flag.length))
+            {
+                Bootloader_Notify("ERASE", "fail");
+                Bootloader_JumpToApp(fallback_addr);
+                break;
+            }
+            Bootloader_Notify("ERASE", "ok");
+
+            /* ---- 3. 搬运 CACHE -> 目标区 ---- */
+            Bootloader_Notify("COPY", "start");
+            {
+                const uint8_t *src = (const uint8_t *)CACHE_ADDR;
+                if (!Bootloader_FlashWrite(target_addr, src, flag.length))
+                {
+                    Bootloader_Notify("COPY", "fail");
+                    Bootloader_JumpToApp(fallback_addr);
+                    break;
+                }
+            }
+            Bootloader_Notify("COPY", "ok");
+
+            /* ---- 4. 清 FLAG ---- */
+            Bootloader_Notify("FLAG_CLEAR", "start");
+            Bootloader_ClearFlag();
+            Bootloader_Notify("FLAG_CLEAR", "ok");
+
+            /* ---- 5. 跳新固件 ---- */
+            Bootloader_Notify("JUMP_NEW", NULL);
+            Bootloader_JumpToApp(target_addr);
+            break;
+        }
+
+        /* --------------------------------------------------
+         * 上次正在接收, 中途断电: 回退
          * -------------------------------------------------- */
         case UPDATE_STATE_RECEIVING:
+            Bootloader_Notify("STATE", "RECEIVING");
+            Bootloader_Notify("ROLLBACK", "receiving_incomplete");
             Bootloader_ClearFlag();
             Bootloader_JumpToApp(APP_A_ADDR);
             break;
 
-        /* ----------------------------------------------------
-         * 上次升级失败, 回退旧固件
+        /* --------------------------------------------------
+         * 上次升级失败: 回退
          * -------------------------------------------------- */
         case UPDATE_STATE_ABORT:
+            Bootloader_Notify("STATE", "ABORT");
+            Bootloader_Notify("ROLLBACK", "abort");
             Bootloader_ClearFlag();
             Bootloader_JumpToApp(APP_A_ADDR);
             break;
 
-        /* ----------------------------------------------------
-         * 无升级任务, 直接启动 App
+        /* --------------------------------------------------
+         * 无任务
          * -------------------------------------------------- */
         case UPDATE_STATE_IDLE:
         default:
+            Bootloader_Notify("STATE", "IDLE");
             Bootloader_ClearFlag();
             Bootloader_JumpToApp(APP_A_ADDR);
             break;
@@ -314,21 +383,20 @@ void Bootloader_Run(void)
     }
     else
     {
-        /* 标志无效, 无升级任务, 直接启动默认 App */
+        Bootloader_Notify("STATE", "NO_FLAG");
         Bootloader_JumpToApp(APP_A_ADDR);
     }
 
-    /* 如果跳转失败, 停留在 Bootloader */
+    Bootloader_Notify("HALT", "jump_failed");
     while (1)
     {
-        /* 可加入 LED 闪烁指示错误 */
+        /* 跳转失败, 停留 */
     }
 }
 
 /* ============================================================================
  * FLAG 区读写
  * ==========================================================================*/
-
 bool Bootloader_GetFlag(BootFlag_t *flag)
 {
     if (flag == NULL) return false;

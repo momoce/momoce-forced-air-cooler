@@ -12,6 +12,11 @@
 /* 超时时间（毫秒）：收到第一个包后，超过此时间无新包则判定完成 */
 #define OTA_TIMEOUT_MS    200
 
+
+/* ota.h 里加 */
+extern uint8_t *ota_payload_ptr;    /* 指向本帧 bin 载荷 */
+extern uint16_t ota_payload_len;    /* 本帧 bin 载荷长度 */
+
 /* 状态标志 */
 extern volatile uint8_t OTA_flag;
 

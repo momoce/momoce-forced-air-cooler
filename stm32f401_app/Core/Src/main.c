@@ -48,21 +48,19 @@ static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 void StartDefaultTask(void *argument);
+
 osThreadId_t modbusTaskHandle;
-	const osThreadAttr_t modbusTask_attributes = {
+const osThreadAttr_t modbusTask_attributes = {
     .name = "ModbusTask",
     .stack_size = 512 * 4,
     .priority = (osPriority_t)osPriorityAboveNormal,
 };
 
-	
-	
-	
-	
 int main(void)
 {
-	/* ---- 0. 关键: 重定位中断向量表到 App 区 ---- */
-    SCB->VTOR = APP_A_ADDR;      /* 0x08004000, 与链接地址一致 */
+    /* ---- 0. 重定位中断向量表到 App 区 ---- */
+    SCB->VTOR = APP_A_ADDR;      /* 0x08008000, 与 APP_A_ADDR 一致 */
+
     /* ---- 1. HAL 初始化 ---- */
     HAL_Init();
 
@@ -76,17 +74,23 @@ int main(void)
     MX_USART1_UART_Init();
     MX_USART2_UART_Init();
 
+    /* ★ APP 启动标志：让上位机区分 Bootloader 和 APP */
+    HAL_UART_Transmit(&huart1, (uint8_t *)"APP:START\r\n", 11, 100);
+
     /* ---- 4. 初始化 FreeRTOS 内核 ---- */
     osKernelInitialize();
 
     /* ---- 5. 创建任务 ---- */
     defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-    /* 创建Modbus 任务*/
+    /* 创建 Modbus 任务 */
     modbusTaskHandle = osThreadNew(ModbusTask, NULL, &modbusTask_attributes);
-		
-		 Modbus_SetTaskHandle(modbusTaskHandle);
-		Modbus_Init();
+
+    /* ★ 显式强转，避免 osThreadId_t -> TaskHandle_t 的类型警告 */
+    Modbus_SetTaskHandle((TaskHandle_t)modbusTaskHandle);
+
+    Modbus_Init();
+
     /* ---- 6. 启动调度器（不会返回） ---- */
     osKernelStart();
 
@@ -144,14 +148,6 @@ void SystemClock_Config(void)
   */
 static void MX_I2C1_Init(void)
 {
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
   hi2c1.Init.ClockSpeed = 100000;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
@@ -165,10 +161,6 @@ static void MX_I2C1_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
 }
 
 /**
@@ -178,18 +170,10 @@ static void MX_I2C1_Init(void)
   */
 static void MX_TIM3_Init(void)
 {
-
-  /* USER CODE BEGIN TIM3_Init 0 */
-
-  /* USER CODE END TIM3_Init 0 */
-
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_OC_InitTypeDef sConfigOC = {0};
 
-  /* USER CODE BEGIN TIM3_Init 1 */
-
-  /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
   htim3.Init.Prescaler = 0;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
@@ -223,11 +207,7 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN TIM3_Init 2 */
-
-  /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
-
 }
 
 /**
@@ -237,14 +217,6 @@ static void MX_TIM3_Init(void)
   */
 static void MX_USART1_UART_Init(void)
 {
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
   huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
@@ -257,10 +229,6 @@ static void MX_USART1_UART_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
@@ -270,14 +238,6 @@ static void MX_USART1_UART_Init(void)
   */
 static void MX_USART2_UART_Init(void)
 {
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
@@ -290,10 +250,6 @@ static void MX_USART2_UART_Init(void)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
@@ -303,38 +259,25 @@ static void MX_USART2_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-
-  /* USER CODE END MX_GPIO_Init_1 */
-
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-
-  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDefaultTask */
 /**
   * @brief  Function implementing the defaultTask thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartDefaultTask */
-//uint8_t tx_buf1[] = {0x01, 0x03, 0x02, 0x00, 0x0A, 0x79, 0x84};
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  /* Infinite loop */
   for(;;)
   {
-					//HAL_UART_Transmit(&huart1, tx_buf1, sizeof(tx_buf1), 100);
     osDelay(1);
   }
   /* USER CODE END 5 */
@@ -347,26 +290,17 @@ void StartDefaultTask(void *argument)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
   }
   /* USER CODE END Error_Handler_Debug */
 }
+
 #ifdef USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

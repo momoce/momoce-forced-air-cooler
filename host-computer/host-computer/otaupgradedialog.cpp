@@ -22,6 +22,7 @@
 #include <QElapsedTimer>
 #include <QCoreApplication>
 #include <QThread>
+#include <QTimer>
 
 // ============================================================
 // Modbus CRC16
@@ -43,15 +44,30 @@ static quint16 modbusCrc16(const quint8 *data, int len)
     return crc;
 }
 
+static bool isPrintableAscii(quint8 b)
+{
+    return (b >= 0x20 && b <= 0x7E) || b == '\r' || b == '\n' || b == '\t';
+}
+
+// ============================================================
+// 构造 / 析构
+// ============================================================
 OtaUpgradeDialog::OtaUpgradeDialog(QSerialPort *serialPort, QWidget *parent)
     : QDialog(parent)
     , m_serialPort(serialPort)
 {
     setupUI();
+
+    m_rxTimer = new QTimer(this);
+    m_rxTimer->setInterval(30);
+    connect(m_rxTimer, &QTimer::timeout,
+            this, &OtaUpgradeDialog::onPollRxData);
 }
 
 OtaUpgradeDialog::~OtaUpgradeDialog()
 {
+    if (m_rxTimer && m_rxTimer->isActive())
+        m_rxTimer->stop();
     closeTransport();
 }
 
@@ -81,6 +97,7 @@ void OtaUpgradeDialog::setupUI()
         "}"
         "QPushButton:disabled { background: #BDBDBD; }"
         "QPushButton#secondary { background: #9E9E9E; }"
+        "QPushButton#reboot { background: #FF9800; }"
         "QRadioButton { font-size: 13px; }"
         "QProgressBar {"
         "    border: 1px solid #CCC; border-radius: 6px;"
@@ -211,13 +228,20 @@ void OtaUpgradeDialog::setupUI()
     m_btnClose->setObjectName("secondary");
     connect(m_btnClose, &QPushButton::clicked, this, &QDialog::close);
 
-    m_btnStart = new QPushButton(QStringLiteral("开始升级"));
-    m_btnStart->setEnabled(false);
-    connect(m_btnStart, &QPushButton::clicked,
-            this, &OtaUpgradeDialog::onStartUpgrade);
+    m_btnReboot = new QPushButton(QStringLiteral("重启升级"));
+    m_btnReboot->setObjectName("reboot");
+    m_btnReboot->setEnabled(false);
+    connect(m_btnReboot, &QPushButton::clicked,
+            this, &OtaUpgradeDialog::onRebootUpgrade);
+
+    m_btnSendFirmware = new QPushButton(QStringLiteral("发送固件包"));
+    m_btnSendFirmware->setEnabled(false);
+    connect(m_btnSendFirmware, &QPushButton::clicked,
+            this, &OtaUpgradeDialog::onSendFirmware);
 
     btnLayout->addWidget(m_btnClose);
-    btnLayout->addWidget(m_btnStart);
+    btnLayout->addWidget(m_btnReboot);
+    btnLayout->addWidget(m_btnSendFirmware);
 
     mainLayout->addLayout(btnLayout);
 }
@@ -232,7 +256,10 @@ void OtaUpgradeDialog::setUiBusy(bool busy)
     m_spinChunkSize->setEnabled(!busy);
     m_spinIntervalMs->setEnabled(!busy);
     m_btnSelect->setEnabled(!busy);
-    m_btnStart->setEnabled(!busy && !m_fileData.isEmpty());
+
+    m_btnSendFirmware->setEnabled(!busy && !m_fileData.isEmpty());
+    m_btnReboot->setEnabled(!busy && m_btnReboot->property("firmwareSent").toBool());
+
     m_btnClose->setText(busy ? QStringLiteral("取消") : QStringLiteral("关闭"));
 }
 
@@ -242,9 +269,68 @@ void OtaUpgradeDialog::appendLog(const QString &text)
     m_log->appendPlainText(QString("[%1] %2").arg(ts, text));
 }
 
+void OtaUpgradeDialog::appendRxLog(const QByteArray &data)
+{
+    if (data.isEmpty()) return;
+
+    bool allText = true;
+    for (int i = 0; i < data.size(); ++i)
+    {
+        if (!isPrintableAscii(quint8(data[i])))
+        {
+            allText = false;
+            break;
+        }
+    }
+
+    if (allText)
+    {
+        QString txt = QString::fromLatin1(data).trimmed();
+        appendLog(QStringLiteral("RX [文本]: %1").arg(txt));
+    }
+    else
+    {
+        QString hex = QString::fromLatin1(data.toHex(' ').toUpper());
+        QString txt;
+        for (int i = 0; i < data.size(); ++i)
+        {
+            quint8 b = quint8(data[i]);
+            txt += isPrintableAscii(b) ? QChar(b) : QChar('.');
+        }
+        appendLog(QStringLiteral("RX [HEX ]: %1").arg(hex));
+        appendLog(QStringLiteral("RX [TXT ]: %1").arg(txt));
+    }
+}
+
 bool OtaUpgradeDialog::isWifiMode() const
 {
     return m_rdoWifi && m_rdoWifi->isChecked();
+}
+
+void OtaUpgradeDialog::onPollRxData()
+{
+    QByteArray data;
+
+    if (isWifiMode())
+    {
+        if (m_tcpSocket &&
+            m_tcpSocket->state() == QAbstractSocket::ConnectedState)
+        {
+            if (m_tcpSocket->bytesAvailable() > 0)
+                data = m_tcpSocket->readAll();
+        }
+    }
+    else
+    {
+        if (m_serialPort && m_serialPort->isOpen())
+        {
+            if (m_serialPort->bytesAvailable() > 0)
+                data = m_serialPort->readAll();
+        }
+    }
+
+    if (!data.isEmpty())
+        appendRxLog(data);
 }
 
 // ============================================================
@@ -300,7 +386,10 @@ bool OtaUpgradeDialog::loadBinFile(const QString &path)
                   .arg(m_fileData.size())
                   .arg(m_fileCrc, 4, 16, QChar('0')).toUpper());
 
-    m_btnStart->setEnabled(true);
+    m_btnReboot->setProperty("firmwareSent", false);
+    m_btnSendFirmware->setEnabled(true);
+    m_btnReboot->setEnabled(false);
+
     return true;
 }
 
@@ -309,6 +398,9 @@ bool OtaUpgradeDialog::loadBinFile(const QString &path)
 // ============================================================
 bool OtaUpgradeDialog::openTransport()
 {
+    if (m_serialPort && m_serialPort->isOpen())
+        m_serialPort->readAll();
+
     if (isWifiMode())
     {
         closeTransport();
@@ -346,6 +438,9 @@ bool OtaUpgradeDialog::openTransport()
 
 void OtaUpgradeDialog::closeTransport()
 {
+    if (m_rxTimer && m_rxTimer->isActive())
+        m_rxTimer->stop();
+
     if (m_tcpSocket)
     {
         m_tcpSocket->disconnectFromHost();
@@ -385,7 +480,7 @@ QByteArray OtaUpgradeDialog::readBytes(int timeoutMs)
     while (timer.elapsed() < timeoutMs)
     {
         int remain = timeoutMs - int(timer.elapsed());
-        int wait   = qMin(remain, 50);
+        int wait   = qMin(remain, 30);
 
         if (isWifiMode())
         {
@@ -402,14 +497,16 @@ QByteArray OtaUpgradeDialog::readBytes(int timeoutMs)
 
         if (buffer.size() >= 6)
             break;
+
+        QCoreApplication::processEvents();
     }
     return buffer;
 }
 
 // ============================================================
-// OTA 流程
+// 发送固件包
 // ============================================================
-void OtaUpgradeDialog::onStartUpgrade()
+void OtaUpgradeDialog::onSendFirmware()
 {
     if (m_fileData.isEmpty())
     {
@@ -422,7 +519,6 @@ void OtaUpgradeDialog::onStartUpgrade()
     m_progress->setValue(0);
     m_lblStatus->setText(QStringLiteral("准备连接..."));
 
-    // ---- 0. 打开传输通道 ----
     if (!openTransport())
     {
         setUiBusy(false);
@@ -430,7 +526,9 @@ void OtaUpgradeDialog::onStartUpgrade()
         return;
     }
 
-    // ---- 1. 发送 OTA 开始帧 00 02 00 00 + len + crc ----
+    // ★ 注意：这里不再启动 m_rxTimer，等 OTA_READY 之后再启动
+
+    // ---- 1. 发送 OTA 开始帧 ----
     m_lblStatus->setText(QStringLiteral("发送 OTA 开始帧..."));
     QCoreApplication::processEvents();
 
@@ -442,7 +540,7 @@ void OtaUpgradeDialog::onStartUpgrade()
         return;
     }
 
-    // ---- 2. 等待 01 02 00 00 + CRC ----
+    // ---- 2. 等待 01 02 00 00 ----
     m_lblStatus->setText(QStringLiteral("等待开始响应..."));
     QCoreApplication::processEvents();
 
@@ -454,9 +552,26 @@ void OtaUpgradeDialog::onStartUpgrade()
         return;
     }
 
-    appendLog(QStringLiteral("OTA 握手成功，开始传输 bin 文件"));
+    appendLog(QStringLiteral("OTA 握手成功，等待下位机就绪..."));
 
-    // ---- 3. 传输 bin ----
+    // ---- 3. ★ 关键改动：等待下位机的 OTA_READY ----
+    m_lblStatus->setText(QStringLiteral("等待下位机擦除完成..."));
+    QCoreApplication::processEvents();
+
+    if (!waitOtaReady(6000))
+    {
+        closeTransport();
+        setUiBusy(false);
+        m_lblStatus->setText(QStringLiteral("等待 OTA_READY 超时"));
+        return;
+    }
+
+    appendLog(QStringLiteral("下位机已就绪，开始传输 bin 文件"));
+
+    // ---- 4. ★ 现在才启动轮询，实时显示下位机回传 ----
+    m_rxTimer->start();
+
+    // ---- 5. 传输 bin ----
     if (!sendFirmwareData())
     {
         closeTransport();
@@ -465,47 +580,94 @@ void OtaUpgradeDialog::onStartUpgrade()
         return;
     }
 
-    // ★★★ 关键：等 1 秒，让下位机 200ms 超时 + 校验 + 恢复 ModbusTask
-    appendLog(QStringLiteral("bin 发送完成，等待下位机校验..."));
-    m_lblStatus->setText(QStringLiteral("等待下位机校验..."));
-    QCoreApplication::processEvents();
-
-    QThread::msleep(1000);
-    QCoreApplication::processEvents();
-
-    // ---- 4. 发送升级完成帧 ----
-    m_lblStatus->setText(QStringLiteral("发送升级完成帧..."));
-    QCoreApplication::processEvents();
-
-    if (!sendOtaDoneCommand())
+    // ---- 6. 给下位机一点时间做内部收尾 ----
+    appendLog(QStringLiteral("bin 发送完成，等待下位机写入 Flash..."));
     {
-        closeTransport();
-        setUiBusy(false);
-        m_lblStatus->setText(QStringLiteral("发送完成帧失败"));
-        return;
+        QElapsedTimer t;
+        t.start();
+        while (t.elapsed() < 1500)
+        {
+            QCoreApplication::processEvents();
+            QThread::msleep(20);
+        }
     }
+
+    // ---- 7. 停止轮询, 关闭传输, 启用重启按钮 ----
+    if (m_rxTimer && m_rxTimer->isActive())
+        m_rxTimer->stop();
+    closeTransport();
+    setUiBusy(false);
+
+    m_btnReboot->setProperty("firmwareSent", true);
+    m_btnReboot->setEnabled(true);
+    m_lblStatus->setText(QStringLiteral("固件包已发送，请点击「重启升级」"));
+    appendLog(QStringLiteral("固件包发送完成，请点击「重启升级」"));
 }
 
 // ============================================================
-// 发送 OTA 开始帧：
-//   [00][02][00][00][lenH][lenL][lenHH][lenLL][crcH][crcL] + CRC
+// 发送重启升级命令
+// ============================================================
+void OtaUpgradeDialog::onRebootUpgrade()
+{
+    setUiBusy(true);
+    m_lblStatus->setText(QStringLiteral("发送重启升级命令..."));
+
+    if (!openTransport())
+    {
+        setUiBusy(false);
+        m_lblStatus->setText(QStringLiteral("连接失败"));
+        return;
+    }
+
+    m_rxTimer->start();
+
+    // ---- 1. 发送 00 02 01 01 + CRC16 ----
+    if (!sendRebootCommand())
+    {
+        closeTransport();
+        setUiBusy(false);
+        m_lblStatus->setText(QStringLiteral("发送重启命令失败"));
+        return;
+    }
+
+    // ---- 2. 等待 01 02 01 01 + CRC16 ----
+    m_lblStatus->setText(QStringLiteral("等待重启响应..."));
+    QCoreApplication::processEvents();
+
+    if (waitRebootAck(3000))
+    {
+        appendLog(QStringLiteral("下位机已确认，开始重启升级"));
+        m_lblStatus->setText(QStringLiteral("升级中，下位机即将重启..."));
+    }
+    else
+    {
+        appendLog(QStringLiteral("未收到重启响应"));
+        m_lblStatus->setText(QStringLiteral("未收到重启响应"));
+    }
+
+    if (m_rxTimer && m_rxTimer->isActive())
+        m_rxTimer->stop();
+    closeTransport();
+    setUiBusy(false);
+}
+
+// ============================================================
+// 发送 OTA 开始帧
 // ============================================================
 bool OtaUpgradeDialog::sendOtaStartCommand()
 {
     QByteArray data;
-    data.append(char(0x00));   // 广播地址
-    data.append(char(0x02));   // 功能码 OTA
-    data.append(char(0x00));   // 子命令：开始
+    data.append(char(0x00));
+    data.append(char(0x02));
+    data.append(char(0x00));
     data.append(char(0x00));
 
-    /* ★ 4 字节长度（大端） */
     quint32 len = static_cast<quint32>(m_fileData.size());
     data.append(char((len >> 24) & 0xFF));
     data.append(char((len >> 16) & 0xFF));
     data.append(char((len >> 8)  & 0xFF));
     data.append(char( len        & 0xFF));
 
-    /* ★ 2 字节整体 CRC16（大端） */
     data.append(char((m_fileCrc >> 8) & 0xFF));
     data.append(char( m_fileCrc       & 0xFF));
 
@@ -522,44 +684,77 @@ bool OtaUpgradeDialog::sendOtaStartCommand()
     return true;
 }
 
-// ============================================================
-// 等待 01 02 00 00 + CRC
-// ============================================================
 bool OtaUpgradeDialog::waitOtaStartAck(int timeoutMs)
 {
-    QByteArray buffer = readBytes(timeoutMs);
-    if (buffer.isEmpty())
+    QElapsedTimer t;
+    t.start();
+    QByteArray buffer;
+
+    while (t.elapsed() < timeoutMs)
     {
-        appendLog(QStringLiteral("未收到开始响应"));
-        return false;
+        QByteArray chunk = readBytes(50);
+        if (!chunk.isEmpty())
+            buffer.append(chunk);
+
+        const QByteArray expect = QByteArray::fromHex("01020000");
+        if (buffer.contains(expect))
+            return true;
+
+        QCoreApplication::processEvents();
     }
 
-    appendLog(QStringLiteral("RX: %1")
-                  .arg(QString::fromLatin1(buffer.toHex(' ').toUpper())));
+    appendLog(QStringLiteral("未收到开始响应"));
+    return false;
+}
 
-    const QByteArray expect = QByteArray::fromHex("01020000");
-    if (!buffer.contains(expect))
-    {
-        appendLog(QStringLiteral("响应不匹配，期望包含 01 02 00 00"));
-        return false;
-    }
+// ============================================================
+// ★ 等待下位机的 OTA_READY 文本
+//    说明下位机已完成 Flash 擦除并武装好接收
+// ============================================================
+bool OtaUpgradeDialog::waitOtaReady(int timeoutMs)
+{
+    QElapsedTimer t;
+    t.start();
+    QByteArray buffer;
+    const QByteArray expect = QByteArrayLiteral("OTA_READY");
 
-    int idx = buffer.indexOf(expect);
-    if (idx >= 0 && buffer.size() >= idx + 6)
+    while (t.elapsed() < timeoutMs)
     {
-        QByteArray resp = buffer.mid(idx, 6);
-        quint16 calc = modbusCrc16(
-            reinterpret_cast<const quint8 *>(resp.constData()), 4);
-        quint16 recv = (quint8)resp[4] | ((quint8)resp[5] << 8);
-        if (calc != recv)
+        QByteArray chunk;
+
+        if (isWifiMode())
         {
-            appendLog(QStringLiteral("响应 CRC 错误"));
-            return false;
+            if (m_tcpSocket &&
+                m_tcpSocket->state() == QAbstractSocket::ConnectedState &&
+                m_tcpSocket->waitForReadyRead(30))
+            {
+                chunk = m_tcpSocket->readAll();
+            }
         }
-        appendLog(QStringLiteral("开始响应 CRC 通过"));
+        else
+        {
+            if (m_serialPort &&
+                m_serialPort->isOpen() &&
+                m_serialPort->waitForReadyRead(30))
+            {
+                chunk = m_serialPort->readAll();
+            }
+        }
+
+        if (!chunk.isEmpty())
+        {
+            buffer.append(chunk);
+            appendRxLog(chunk);   // 中间数据也写日志，方便调试
+
+            if (buffer.contains(expect))
+                return true;
+        }
+
+        QCoreApplication::processEvents();
     }
 
-    return true;
+    appendLog(QStringLiteral("等待 OTA_READY 超时"));
+    return false;
 }
 
 // ============================================================
@@ -619,19 +814,19 @@ bool OtaUpgradeDialog::sendFirmwareData()
 }
 
 // ============================================================
-// 发送 00 02 00 01 + CRC
+// 发送重启升级命令: 00 02 01 01 + CRC16
 // ============================================================
-bool OtaUpgradeDialog::sendOtaDoneCommand()
+bool OtaUpgradeDialog::sendRebootCommand()
 {
     QByteArray data;
-    data.append(char(0x00));
-    data.append(char(0x02));
-    data.append(char(0x00));
-    data.append(char(0x01));
+    data.append(char(0x00));   // 广播地址
+    data.append(char(0x02));   // 功能码 OTA
+    data.append(char(0x01));   // 子命令高字节
+    data.append(char(0x01));   // 子命令低字节
 
     QByteArray frame = ModbusRTU::buildFrame(data);
 
-    appendLog(QStringLiteral("TX [完成]: %1")
+    appendLog(QStringLiteral("TX [重启]: %1")
                   .arg(QString::fromLatin1(frame.toHex(' ').toUpper())));
 
     if (writeBytes(frame) != frame.size())
@@ -643,41 +838,41 @@ bool OtaUpgradeDialog::sendOtaDoneCommand()
 }
 
 // ============================================================
-// 等待 01 02 00 01 + CRC
+// 等待 01 02 01 01 + CRC16
 // ============================================================
-bool OtaUpgradeDialog::waitOtaDoneAck(int timeoutMs)
+bool OtaUpgradeDialog::waitRebootAck(int timeoutMs)
 {
-    QByteArray buffer = readBytes(timeoutMs);
-    if (buffer.isEmpty())
-    {
-        appendLog(QStringLiteral("未收到完成响应"));
-        return false;
-    }
+    QElapsedTimer t;
+    t.start();
+    QByteArray buffer;
 
-    appendLog(QStringLiteral("RX: %1")
-                  .arg(QString::fromLatin1(buffer.toHex(' ').toUpper())));
-
-    const QByteArray expect = QByteArray::fromHex("01020001");
-    if (!buffer.contains(expect))
+    while (t.elapsed() < timeoutMs)
     {
-        appendLog(QStringLiteral("响应不匹配，期望包含 01 02 00 01"));
-        return false;
-    }
+        QByteArray chunk = readBytes(50);
+        if (!chunk.isEmpty())
+            buffer.append(chunk);
 
-    int idx = buffer.indexOf(expect);
-    if (idx >= 0 && buffer.size() >= idx + 6)
-    {
-        QByteArray resp = buffer.mid(idx, 6);
-        quint16 calc = modbusCrc16(
-            reinterpret_cast<const quint8 *>(resp.constData()), 4);
-        quint16 recv = (quint8)resp[4] | ((quint8)resp[5] << 8);
-        if (calc != recv)
+        const QByteArray expect = QByteArray::fromHex("01020101");
+        if (buffer.contains(expect))
         {
-            appendLog(QStringLiteral("完成响应 CRC 错误"));
-            return false;
+            int idx = buffer.indexOf(expect);
+            if (buffer.size() >= idx + 6)
+            {
+                QByteArray resp = buffer.mid(idx, 6);
+                quint16 calc = modbusCrc16(
+                    reinterpret_cast<const quint8 *>(resp.constData()), 4);
+                quint16 recv = (quint8)resp[4] | ((quint8)resp[5] << 8);
+                if (calc == recv)
+                    appendLog(QStringLiteral("重启响应 CRC 通过"));
+                else
+                    appendLog(QStringLiteral("重启响应 CRC 错误"));
+            }
+            return true;
         }
-        appendLog(QStringLiteral("完成响应 CRC 通过"));
+
+        QCoreApplication::processEvents();
     }
 
-    return true;
+    appendLog(QStringLiteral("未收到重启响应"));
+    return false;
 }
