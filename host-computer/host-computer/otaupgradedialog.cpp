@@ -9,7 +9,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QButtonGroup>
-#include <QSpinBox>
+#include <QComboBox>              // ★ 替代 QSpinBox
 #include <QProgressBar>
 #include <QPlainTextEdit>
 #include <QFileDialog>
@@ -86,9 +86,25 @@ void OtaUpgradeDialog::setupUI()
         "    border: 1px solid #CCC; border-radius: 4px;"
         "    padding: 4px 8px; font-size: 13px;"
         "}"
-        "QSpinBox {"
+        // ★ 下拉菜单样式
+        "QComboBox {"
         "    border: 1px solid #CCC; border-radius: 4px;"
         "    padding: 4px 8px; font-size: 13px;"
+        "    background: white; min-width: 110px;"
+        "}"
+        "QComboBox::drop-down {"
+        "    border: none; width: 22px;"
+        "}"
+        "QComboBox::down-arrow {"
+        "    image: none; border-left: 4px solid transparent;"
+        "    border-right: 4px solid transparent;"
+        "    border-top: 5px solid #666;"
+        "    width: 0; height: 0; margin-right: 8px;"
+        "}"
+        "QComboBox QAbstractItemView {"
+        "    background: white; border: 1px solid #CCC;"
+        "    selection-background-color: #4CAF50;"
+        "    selection-color: white; outline: none;"
         "}"
         "QPushButton {"
         "    background: #4CAF50; color: white;"
@@ -181,25 +197,52 @@ void OtaUpgradeDialog::setupUI()
 
     mainLayout->addLayout(fileLayout);
 
-    // ---- 传输参数 ----
+    // ============================================================
+    // ★ 传输参数（改为下拉菜单，禁止手动输入）
+    // ============================================================
     auto *paramLayout = new QGridLayout();
     paramLayout->setHorizontalSpacing(10);
     paramLayout->setVerticalSpacing(6);
 
-    m_spinChunkSize = new QSpinBox();
-    m_spinChunkSize->setRange(16, 240);
-    m_spinChunkSize->setValue(200);
-    m_spinChunkSize->setSuffix(QStringLiteral(" 字节/包"));
+    // 每包字节数
+    m_comboChunkSize = new QComboBox();
+    m_comboChunkSize->setEditable(false);              // ★ 不可手动输入
+    m_comboChunkSize->setInsertPolicy(QComboBox::NoInsert);
+    m_comboChunkSize->addItem(QStringLiteral("32 字节/包"),  32);
+    m_comboChunkSize->addItem(QStringLiteral("64 字节/包"),  64);
+    m_comboChunkSize->addItem(QStringLiteral("100 字节/包"), 100);
+    m_comboChunkSize->addItem(QStringLiteral("128 字节/包"), 128);
+    m_comboChunkSize->addItem(QStringLiteral("160 字节/包"), 160);
+    m_comboChunkSize->addItem(QStringLiteral("200 字节/包"), 200);
+    m_comboChunkSize->addItem(QStringLiteral("240 字节/包"), 240);
+    // 默认 200
+    {
+        int idx = m_comboChunkSize->findData(200);
+        if (idx >= 0) m_comboChunkSize->setCurrentIndex(idx);
+    }
 
-    m_spinIntervalMs = new QSpinBox();
-    m_spinIntervalMs->setRange(0, 5000);
-    m_spinIntervalMs->setValue(20);
-    m_spinIntervalMs->setSuffix(QStringLiteral(" ms"));
+    // 包间隔
+    m_comboInterval = new QComboBox();
+    m_comboInterval->setEditable(false);               // ★ 不可手动输入
+    m_comboInterval->setInsertPolicy(QComboBox::NoInsert);
+    m_comboInterval->addItem(QStringLiteral("0 ms（无间隔）"), 0);
+    m_comboInterval->addItem(QStringLiteral("5 ms"),   5);
+    m_comboInterval->addItem(QStringLiteral("10 ms"),  10);
+    m_comboInterval->addItem(QStringLiteral("20 ms"),  20);
+    m_comboInterval->addItem(QStringLiteral("30 ms"),  30);
+    m_comboInterval->addItem(QStringLiteral("50 ms"),  50);
+    m_comboInterval->addItem(QStringLiteral("100 ms"), 100);
+    m_comboInterval->addItem(QStringLiteral("200 ms"), 200);
+    // 默认 20
+    {
+        int idx = m_comboInterval->findData(20);
+        if (idx >= 0) m_comboInterval->setCurrentIndex(idx);
+    }
 
     paramLayout->addWidget(new QLabel(QStringLiteral("每包字节数：")), 0, 0);
-    paramLayout->addWidget(m_spinChunkSize, 0, 1);
+    paramLayout->addWidget(m_comboChunkSize, 0, 1);
     paramLayout->addWidget(new QLabel(QStringLiteral("包间隔：")),     0, 2);
-    paramLayout->addWidget(m_spinIntervalMs, 0, 3);
+    paramLayout->addWidget(m_comboInterval,  0, 3);
     paramLayout->setColumnStretch(1, 1);
     paramLayout->setColumnStretch(3, 1);
 
@@ -253,8 +296,11 @@ void OtaUpgradeDialog::setUiBusy(bool busy)
     m_rdoWifi->setEnabled(!busy);
     m_editWifiIp->setEnabled(!busy);
     m_editWifiPort->setEnabled(!busy);
-    m_spinChunkSize->setEnabled(!busy);
-    m_spinIntervalMs->setEnabled(!busy);
+
+    // ★ 原来是 QSpinBox，现在改为 QComboBox
+    if (m_comboChunkSize) m_comboChunkSize->setEnabled(!busy);
+    if (m_comboInterval)  m_comboInterval->setEnabled(!busy);
+
     m_btnSelect->setEnabled(!busy);
 
     m_btnSendFirmware->setEnabled(!busy && !m_fileData.isEmpty());
@@ -526,9 +572,7 @@ void OtaUpgradeDialog::onSendFirmware()
         return;
     }
 
-    // ★ 注意：这里不再启动 m_rxTimer，等 OTA_READY 之后再启动
-
-    // ---- 1. 发送 OTA 开始帧 ----
+    // 发送 OTA 开始帧
     m_lblStatus->setText(QStringLiteral("发送 OTA 开始帧..."));
     QCoreApplication::processEvents();
 
@@ -540,7 +584,7 @@ void OtaUpgradeDialog::onSendFirmware()
         return;
     }
 
-    // ---- 2. 等待 01 02 00 00 ----
+    // 等待 01 02 00 00
     m_lblStatus->setText(QStringLiteral("等待开始响应..."));
     QCoreApplication::processEvents();
 
@@ -554,7 +598,7 @@ void OtaUpgradeDialog::onSendFirmware()
 
     appendLog(QStringLiteral("OTA 握手成功，等待下位机就绪..."));
 
-    // ---- 3. ★ 关键改动：等待下位机的 OTA_READY ----
+    // 等待下位机的 OTA_READY
     m_lblStatus->setText(QStringLiteral("等待下位机擦除完成..."));
     QCoreApplication::processEvents();
 
@@ -568,10 +612,10 @@ void OtaUpgradeDialog::onSendFirmware()
 
     appendLog(QStringLiteral("下位机已就绪，开始传输 bin 文件"));
 
-    // ---- 4. ★ 现在才启动轮询，实时显示下位机回传 ----
+    // 现在才启动轮询
     m_rxTimer->start();
 
-    // ---- 5. 传输 bin ----
+    // 传输 bin
     if (!sendFirmwareData())
     {
         closeTransport();
@@ -580,7 +624,7 @@ void OtaUpgradeDialog::onSendFirmware()
         return;
     }
 
-    // ---- 6. 给下位机一点时间做内部收尾 ----
+    // 等待下位机收尾
     appendLog(QStringLiteral("bin 发送完成，等待下位机写入 Flash..."));
     {
         QElapsedTimer t;
@@ -592,7 +636,6 @@ void OtaUpgradeDialog::onSendFirmware()
         }
     }
 
-    // ---- 7. 停止轮询, 关闭传输, 启用重启按钮 ----
     if (m_rxTimer && m_rxTimer->isActive())
         m_rxTimer->stop();
     closeTransport();
@@ -621,7 +664,6 @@ void OtaUpgradeDialog::onRebootUpgrade()
 
     m_rxTimer->start();
 
-    // ---- 1. 发送 00 02 01 01 + CRC16 ----
     if (!sendRebootCommand())
     {
         closeTransport();
@@ -630,7 +672,6 @@ void OtaUpgradeDialog::onRebootUpgrade()
         return;
     }
 
-    // ---- 2. 等待 01 02 01 01 + CRC16 ----
     m_lblStatus->setText(QStringLiteral("等待重启响应..."));
     QCoreApplication::processEvents();
 
@@ -708,8 +749,7 @@ bool OtaUpgradeDialog::waitOtaStartAck(int timeoutMs)
 }
 
 // ============================================================
-// ★ 等待下位机的 OTA_READY 文本
-//    说明下位机已完成 Flash 擦除并武装好接收
+// 等待下位机的 OTA_READY
 // ============================================================
 bool OtaUpgradeDialog::waitOtaReady(int timeoutMs)
 {
@@ -744,7 +784,7 @@ bool OtaUpgradeDialog::waitOtaReady(int timeoutMs)
         if (!chunk.isEmpty())
         {
             buffer.append(chunk);
-            appendRxLog(chunk);   // 中间数据也写日志，方便调试
+            appendRxLog(chunk);
 
             if (buffer.contains(expect))
                 return true;
@@ -762,8 +802,18 @@ bool OtaUpgradeDialog::waitOtaReady(int timeoutMs)
 // ============================================================
 bool OtaUpgradeDialog::sendFirmwareData()
 {
-    const int chunkSize  = m_spinChunkSize->value();
-    const int intervalMs = m_spinIntervalMs->value();
+    // ★ 从下拉菜单读取，如果为空则用默认值兜底
+    int chunkSize = 200;
+    int intervalMs = 20;
+
+    if (m_comboChunkSize) {
+        QVariant v = m_comboChunkSize->currentData();
+        if (v.isValid()) chunkSize = v.toInt();
+    }
+    if (m_comboInterval) {
+        QVariant v = m_comboInterval->currentData();
+        if (v.isValid()) intervalMs = v.toInt();
+    }
 
     const int total = m_fileData.size();
     int     sent = 0;

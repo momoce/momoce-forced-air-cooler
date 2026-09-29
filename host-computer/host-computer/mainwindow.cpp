@@ -52,7 +52,7 @@ MainWindow::MainWindow(QWidget *parent)
              geo.y() + (geo.height() - height()) / 2);
     }
 
-    setWindowTitle(QStringLiteral("压风式散热器v0.0.2"));
+    setWindowTitle(QStringLiteral("压风式散热器v0.1.0"));
     updateLayout();
 }
 
@@ -69,7 +69,7 @@ void MainWindow::setupUI()
 {
     // ---- 1. 标题栏 ----
     m_titleBar = new TitleBar(this);
-    m_titleBar->setTitle(QStringLiteral("压风式散热器v0.0.2"));
+    m_titleBar->setTitle(QStringLiteral("压风式散热器v0.1.0"));
 
     connect(m_titleBar, &TitleBar::gearClicked,
             this, &MainWindow::onGearClicked);
