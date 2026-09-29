@@ -5,7 +5,7 @@
 #include "otaupgradedialog.h"      // OTA升级子窗口接收槽
 #include "modbus_rtu.h"
 #include "devicepromptwidget.h"
-
+#include "pwmcurvepanel.h"         // ⭐ CPU / GPU 风扇曲线面板
 
 #include <QPainter>
 #include <QPainterPath>
@@ -20,6 +20,8 @@
 #include <QTimer>
 #include <QDebug>
 #include <QMessageBox>
+#include <QPointF>
+#include <QVector>
 
 static const int kTitleBarHeight = 56;
 static const int kCornerRadius   = 14;
@@ -83,7 +85,6 @@ void MainWindow::setupUI()
             this, &MainWindow::onPowerToggled);
 
     // ---- 2. 设置菜单 ----
-
     m_settingsMenu = new SettingsPanel(this);
     connect(m_settingsMenu, &SettingsPanel::backgroundSettingsRequested,
             this, &MainWindow::onOpenBackgroundDialog);
@@ -144,7 +145,27 @@ void MainWindow::setupUI()
 
     m_knownPorts = allAvailablePorts();
 
+    // ---- 10. CPU / GPU 风扇曲线面板 ----
+    m_pwmCurvePanel = new PwmCurvePanel(this);
 
+    // ⭐⭐⭐ 关键：标题栏预设切换 → 曲线面板同步切换 ⭐⭐⭐
+    {
+        bool ok = connect(m_titleBar, &TitleBar::presetChanged,
+                          m_pwmCurvePanel, &PwmCurvePanel::applyPreset);
+        qDebug() << "[MainWindow] presetChanged -> applyPreset connect = " << ok;
+    }
+
+    connect(m_pwmCurvePanel, &PwmCurvePanel::curvesChanged,
+            this, [](const QVector<QPointF> &cpu, const QVector<QPointF> &gpu){
+                QString s;
+                s += QStringLiteral("[CPU 曲线] 点数=%1\n").arg(cpu.size());
+                for (const auto &p : cpu)
+                    s += QString("  %1°C -> %2\n").arg(p.x()).arg(p.y());
+                s += QStringLiteral("[GPU 曲线] 点数=%1\n").arg(gpu.size());
+                for (const auto &p : gpu)
+                    s += QString("  %1°C -> %2\n").arg(p.x()).arg(p.y());
+                qDebug().noquote() << s;
+            });
 }
 
 // ============================================================
@@ -155,6 +176,19 @@ void MainWindow::updateLayout()
     if (!m_titleBar) return;
     m_titleBar->setGeometry(0, 0, width(), kTitleBarHeight);
     m_titleBar->raise();
+
+    // ---- 风扇曲线面板布局：铺满内容区 ----
+    if (m_pwmCurvePanel) {
+        const int margin = 12;
+        int top    = kTitleBarHeight + margin;
+        int availH = height() - top - margin;
+        int availW = width()  - margin * 2;
+
+        if (availW > 20 && availH > 20) {
+            m_pwmCurvePanel->setGeometry(margin, top, availW, availH);
+            m_pwmCurvePanel->raise();
+        }
+    }
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
@@ -167,6 +201,9 @@ void MainWindow::resizeEvent(QResizeEvent *event)
         m_devicePrompt->setGeometry(
             0, kTitleBarHeight,
             width(), height() - kTitleBarHeight);
+        // ⭐ 让提示卡始终浮在曲线面板之上
+        if (m_devicePrompt->isVisible())
+            m_devicePrompt->raise();
     }
 }
 
@@ -805,9 +842,9 @@ void MainWindow::onDisconnectTimeout()
     closeSerialPort();
 }
 
-
-
-//OTA升级子菜单的相关执行函数
+// ============================================================
+// OTA升级子菜单的相关执行函数
+// ============================================================
 void MainWindow::onOpenOtaUpgrade()
 {
     // 1. 暂停心跳

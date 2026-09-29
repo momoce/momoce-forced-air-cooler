@@ -19,6 +19,7 @@ class QShowEvent;
 class QResizeEvent;
 class QPaintEvent;
 class DevicePromptWidget;
+class PwmCurvePanel;              // ⭐ CPU / GPU 风扇曲线面板
 
 class MainWindow : public QWidget
 {
@@ -39,8 +40,6 @@ private slots:
     void onPowerToggled(bool checked);
     void onSerialDataReceived();
     void onOpenOtaUpgrade();     // OTA升级子窗口接收槽
-
-
 
     void onDeviceFound(const QString &portName);
     void onScanFinished();
@@ -96,11 +95,14 @@ private:
     QPixmap m_backgroundImage;
     int     m_opacity = 255;
 
-    TitleBar           *m_titleBar     = nullptr;
-    SettingsPanel      *m_settingsMenu = nullptr;
-    QSerialPort        *m_serialPort   = nullptr;
-    ModbusScanner      *m_scanner      = nullptr;
-    DevicePromptWidget *m_devicePrompt = nullptr;
+    TitleBar           *m_titleBar       = nullptr;
+    SettingsPanel      *m_settingsMenu   = nullptr;
+    QSerialPort        *m_serialPort     = nullptr;
+    ModbusScanner      *m_scanner        = nullptr;
+    DevicePromptWidget *m_devicePrompt   = nullptr;
+
+    // ⭐ CPU / GPU 温度→PWM 风扇曲线面板
+    PwmCurvePanel      *m_pwmCurvePanel  = nullptr;
 
     QString m_currentPreset;
 };

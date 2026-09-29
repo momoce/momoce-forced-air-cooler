@@ -434,6 +434,11 @@
               <FileType>1</FileType>
               <FilePath>..\Core\Inc\OTA.c</FilePath>
             </File>
+            <File>
+              <FileName>wifi.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\wifi.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

@@ -54,6 +54,14 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(host-computer
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
+
+
+
+
+        pwmcurvechart.h
+        pwmcurvechart.cpp
+        pwmcurvepanel.h
+        pwmcurvepanel.cpp
     )
 else()
     if(ANDROID)

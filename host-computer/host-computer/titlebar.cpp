@@ -122,8 +122,14 @@ void TitleBar::setupUI()
     connect(m_powerButton, &QPushButton::toggled,
             this, &TitleBar::powerToggled);
 
-    m_presets = QStringList{ QStringLiteral("默认预设"), QStringLiteral("预设 2") };
-    m_currentPreset = m_presets.first();
+    // ⭐ 预设列表：与曲线面板 applyPreset() 中的关键词一一对应
+    m_presets = QStringList{
+        QStringLiteral("静音"),
+        QStringLiteral("平衡"),
+        QStringLiteral("性能"),
+        QStringLiteral("自定义")
+    };
+    m_currentPreset = QStringLiteral("平衡");
 
     m_presetButton = new QPushButton(this);
     m_presetButton->setFixedHeight(28);
